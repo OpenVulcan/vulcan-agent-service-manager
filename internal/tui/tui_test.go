@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"reflect"
 	"testing"
@@ -42,5 +43,17 @@ func TestHomeRoutesPathManagement(t *testing.T) {
 	selected := updated.(model)
 	if selected.page != "path" || selected.cursor != 0 {
 		t.Fatalf("home route went to %s at %d", selected.page, selected.cursor)
+	}
+}
+
+// TestRunReportsSourceLoadFailure prevents a damaged preference file from appearing as GitHub mode.
+// TestRunReportsSourceLoadFailure 防止损坏的偏好文件被显示为 GitHub 模式。
+func TestRunReportsSourceLoadFailure(t *testing.T) {
+	want := errors.New("invalid preferences")
+	// runner simulates a damaged saved source before terminal initialization.
+	// runner 在终端初始化前模拟已保存下载源损坏。
+	runner := func(_ context.Context, _ []string, _ io.Writer) error { return want }
+	if err := Run(context.Background(), runner); !errors.Is(err, want) {
+		t.Fatalf("source load error was hidden: %v", err)
 	}
 }

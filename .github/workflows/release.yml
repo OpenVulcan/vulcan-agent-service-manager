@@ -134,6 +134,24 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ needs.version.outputs.version }}
         run: python scripts/smoke.py --directory dist --platform "$PLATFORM" --version "$VERSION"
+      - name: Smoke the public Unix bootstrap in isolation
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export XDG_BIN_HOME="$RUNNER_TEMP/vasm-bootstrap-bin"
+          export VASM_NO_LAUNCH=1
+          sh scripts/install.sh
+          "$XDG_BIN_HOME/vasm" --version | grep -Eq '^vasm [0-9]+\.[0-9]+\.[0-9]+$'
+      - name: Smoke the public Windows bootstrap in isolation
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'vasm-bootstrap-local'
+          $env:VASM_NO_LAUNCH = '1'
+          & ./scripts/install.ps1
+          $binary = Join-Path $env:LOCALAPPDATA 'OpenVulcan/vasm/bin/vasm.exe'
+          if ((& $binary --version) -notmatch '^vasm [0-9]+\.[0-9]+\.[0-9]+$') { throw 'Public bootstrap version smoke failed' }
       - name: Install and manage the published service natively
         shell: bash
         env:
@@ -184,7 +202,12 @@ jobs:
           RELEASE_TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" != true ]; then
+              echo "Refusing to overwrite an already published manager release: $RELEASE_TAG" >&2
+              exit 1
+            fi
+          else
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "vasm $RELEASE_TAG" --notes "Independent Vulcan Agent Service Manager release."
           fi
           gh release upload "$RELEASE_TAG" dist/* --clobber

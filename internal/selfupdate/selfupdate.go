@@ -21,7 +21,7 @@ import (
 
 // Version is injected by the independent manager release workflow.
 // Version 由独立的管理器发布工作流注入。
-var Version = "0.1.3"
+var Version = "0.1.4"
 
 // Candidate is the latest manager Release resolved from GitHub metadata.
 // Candidate 是从 GitHub 元数据解析出的最新管理器发布版本。
@@ -157,7 +157,10 @@ func Update(ctx context.Context, client *release.Client, source release.Source, 
 		return "", err
 	}
 	if err := copyExecutable(newBinary, executable); err != nil {
-		_ = os.Rename(backup, executable)
+		if restoreErr := os.Rename(backup, executable); restoreErr != nil {
+			cleanup = false
+			return "", fmt.Errorf("manager replacement failed: %w; previous binary remains at %s because restoration failed: %v", err, backup, restoreErr)
+		}
 		return "", err
 	}
 	_ = saveResult(executable, Result{Tag: candidate.Tag, Status: "success"})

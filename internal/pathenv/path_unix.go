@@ -106,7 +106,10 @@ func Remove(directory string) error {
 // saveProfile 原子替换用户 shell 配置文件，同时保留其权限。
 func saveProfile(file string, contents []byte) error {
 	mode := os.FileMode(0o644)
-	if info, err := os.Stat(file); err == nil {
+	if info, err := os.Lstat(file); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("refusing to replace a linked or non-regular shell profile")
+		}
 		mode = info.Mode().Perm()
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err

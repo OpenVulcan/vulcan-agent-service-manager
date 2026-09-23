@@ -33,6 +33,9 @@ func EnsureAbsent(ctx context.Context, record state.Record) error {
 	if err := ValidateName(record.ServiceName); err != nil {
 		return err
 	}
+	if record.ServiceScope != "user" && record.ServiceScope != "system" {
+		return errors.New("native service scope must be user or system")
+	}
 	switch runtime.GOOS {
 	case "windows":
 		output, err := exec.CommandContext(ctx, "sc.exe", "query", record.ServiceName).CombinedOutput()
@@ -44,13 +47,9 @@ func EnsureAbsent(ctx context.Context, record state.Record) error {
 		}
 		return nil
 	case "linux":
-		unitPath := filepath.Join("/etc/systemd/system", record.ServiceName+".service")
-		if record.ServiceScope == "user" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return err
-			}
-			unitPath = filepath.Join(home, ".config", "systemd", "user", record.ServiceName+".service")
+		unitPath, err := nativeDefinitionPath(record)
+		if err != nil {
+			return err
 		}
 		if err := requireAbsentFile(unitPath); err != nil {
 			return err
@@ -69,13 +68,9 @@ func EnsureAbsent(ctx context.Context, record state.Record) error {
 		}
 		return nil
 	case "darwin":
-		plistPath := filepath.Join("/Library/LaunchDaemons", record.ServiceName+".plist")
-		if record.ServiceScope == "user" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return err
-			}
-			plistPath = filepath.Join(home, "Library", "LaunchAgents", record.ServiceName+".plist")
+		plistPath, err := nativeDefinitionPath(record)
+		if err != nil {
+			return err
 		}
 		if err := requireAbsentFile(plistPath); err != nil {
 			return err
@@ -90,6 +85,61 @@ func EnsureAbsent(ctx context.Context, record state.Record) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported service platform %s", runtime.GOOS)
+	}
+}
+
+// VerifyRegistration confirms an adopted native service has its actual platform registration.
+// VerifyRegistration 确认接管的本机服务确实拥有对应平台的注册项。
+func VerifyRegistration(ctx context.Context, record state.Record) error {
+	if err := ValidateName(record.ServiceName); err != nil {
+		return err
+	}
+	if record.ServiceScope != "user" && record.ServiceScope != "system" {
+		return errors.New("native service scope must be user or system")
+	}
+	if runtime.GOOS != "windows" {
+		definition, err := nativeDefinitionPath(record)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(definition)
+		if err != nil {
+			return fmt.Errorf("native service definition is unavailable: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("native service definition is not a regular file")
+		}
+	}
+	if _, err := Lifecycle(ctx, record, "status"); err != nil {
+		return fmt.Errorf("native service status could not be verified: %w", err)
+	}
+	return nil
+}
+
+// nativeDefinitionPath returns the exact unit or plist path used by the service release.
+// nativeDefinitionPath 返回服务发布版本使用的准确 unit 或 plist 路径。
+func nativeDefinitionPath(record state.Record) (string, error) {
+	switch runtime.GOOS {
+	case "linux":
+		if record.ServiceScope == "system" {
+			return filepath.Join("/etc/systemd/system", record.ServiceName+".service"), nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".config", "systemd", "user", record.ServiceName+".service"), nil
+	case "darwin":
+		if record.ServiceScope == "system" {
+			return filepath.Join("/Library/LaunchDaemons", record.ServiceName+".plist"), nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "Library", "LaunchAgents", record.ServiceName+".plist"), nil
+	default:
+		return "", fmt.Errorf("platform %s has no unit or plist definition path", runtime.GOOS)
 	}
 }
 

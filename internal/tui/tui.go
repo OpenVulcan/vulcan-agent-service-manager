@@ -152,17 +152,25 @@ func Run(parent context.Context, runner Runner) error {
 	defer cancel()
 	initial := model{ctx: ctx, cancel: cancel, runner: runner, page: "home", height: 24, initSkills: true, skillNames: "default"}
 	var savedOutput strings.Builder
-	if err := runner(ctx, []string{"source", "show"}, &savedOutput); err == nil {
-		var saved struct {
-			Source     string `json:"source"`
-			MirrorBase string `json:"mirror_base"`
-		}
-		if json.Unmarshal([]byte(savedOutput.String()), &saved) == nil && saved.Source == "mirror" {
-			initial.source = 1
-			if saved.MirrorBase != "" && saved.MirrorBase != "https://gh-proxy.com" {
-				initial.source = 2
-				initial.mirror = saved.MirrorBase
-			}
+	if err := runner(ctx, []string{"source", "show"}, &savedOutput); err != nil {
+		return fmt.Errorf("cannot load manager download source: %w", err)
+	}
+	var saved struct {
+		// Source is the persisted transfer preference.
+		// Source 是已持久化的传输偏好。
+		Source string `json:"source"`
+		// MirrorBase is the persisted custom HTTPS proxy prefix.
+		// MirrorBase 是已持久化的自定义 HTTPS 代理前缀。
+		MirrorBase string `json:"mirror_base"`
+	}
+	if err := json.Unmarshal([]byte(savedOutput.String()), &saved); err != nil {
+		return fmt.Errorf("cannot decode manager download source: %w", err)
+	}
+	if saved.Source == "mirror" {
+		initial.source = 1
+		if saved.MirrorBase != "" && saved.MirrorBase != "https://gh-proxy.com" {
+			initial.source = 2
+			initial.mirror = saved.MirrorBase
 		}
 	}
 	if os.Getenv("VASM_SOURCE") == "mirror" {

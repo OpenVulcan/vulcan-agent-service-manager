@@ -1,6 +1,7 @@
 ﻿# Download, verify, and launch only the standalone vasm manager.
 # 仅下载、校验并启动独立的 vasm 管理器。
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 # Resolve bootstrap choices from environment variables for irm | iex usage.
 # 从环境变量读取引导选项，以兼容 irm | iex。
@@ -44,7 +45,16 @@ try {
     if ($checksumLine -notmatch '^([0-9a-f]{64})  vasm-windows-x64\.zip$') {
         throw 'Invalid manager checksum sidecar'
     }
-    $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Stream the archive through the runtime SHA-256 implementation available in Windows PowerShell and PowerShell 7.
+    # 使用 Windows PowerShell 与 PowerShell 7 均可用的运行时 SHA-256 实现流式校验归档。
+    $archiveStream = [System.IO.File]::OpenRead($archivePath)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $actualHash = [System.BitConverter]::ToString($sha256.ComputeHash($archiveStream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $archiveStream.Dispose()
+    }
     if ($actualHash -ne $Matches[1]) {
         throw 'Manager archive SHA-256 verification failed'
     }
@@ -78,7 +88,15 @@ try {
         Write-Warning 'The existing vasm executable is in use. Open it and choose Update vasm to complete the version change.'
     }
     Write-Host "vasm installed at $destination"
-    & $destination
+    if ($env:VASM_NO_LAUNCH -ne '1') {
+        & $destination
+    }
 } finally {
-    Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    # Delete only the GUID-named directory created beneath the resolved system temporary root.
+    # 仅删除在已解析系统临时根目录下创建的 GUID 命名目录。
+    $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+    $resolvedTemporaryDirectory = [System.IO.Path]::GetFullPath($temporaryDirectory)
+    if ($resolvedTemporaryDirectory.StartsWith($resolvedTempRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Path]::GetFileName($resolvedTemporaryDirectory) -match '^vasm-bootstrap-[0-9a-f]{32}$') {
+        Remove-Item -LiteralPath $resolvedTemporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

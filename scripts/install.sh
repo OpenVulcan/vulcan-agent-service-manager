@@ -12,6 +12,9 @@ MIRROR_BASE="${VASM_MIRROR_BASE:-https://gh-proxy.com}"
 # VERSION is latest or a fixed manager release tag.
 # VERSION 为 latest 或固定的管理器发布标签。
 VERSION="${VASM_VERSION:-latest}"
+# NO_LAUNCH lets unattended verification install the manager without opening a terminal UI.
+# NO_LAUNCH 供无人值守验证仅安装管理器而不打开终端界面。
+NO_LAUNCH="${VASM_NO_LAUNCH:-0}"
 
 # Parse only the documented bootstrap choices; service installation is handled by vasm.
 # 仅解析已公开的引导选项；服务安装由 vasm 负责。
@@ -20,6 +23,7 @@ while [ "$#" -gt 0 ]; do
     --source) SOURCE="$2"; shift 2 ;;
     --mirror-base) MIRROR_BASE="$2"; shift 2 ;;
     --version) VERSION="$2"; shift 2 ;;
+    --no-launch) NO_LAUNCH=1; shift ;;
     *) echo "Unsupported bootstrap option: $1" >&2; exit 2 ;;
   esac
 done
@@ -109,6 +113,9 @@ mkdir -p "$COMMAND_DIR"
 install -m 755 "$SOURCE_BINARY" "$COMMAND_DIR/.vasm-new-$$"
 mv -f "$COMMAND_DIR/.vasm-new-$$" "$COMMAND_DIR/vasm"
 echo "vasm installed at $COMMAND_DIR/vasm"
+if [ "$NO_LAUNCH" = 1 ]; then
+  exit 0
+fi
 if [ ! -r /dev/tty ]; then
   echo "A terminal is required for the interactive installer; run $COMMAND_DIR/vasm later." >&2
   exit 1

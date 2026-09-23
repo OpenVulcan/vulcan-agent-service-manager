@@ -59,9 +59,12 @@ func Adopt(ctx context.Context, stateFile, runtimeRoot string, serviceInstalled 
 	if serviceName == "" {
 		serviceName = "VulcanAgentService"
 	}
+	if err := service.ValidateName(serviceName); err != nil {
+		return state.Record{}, err
+	}
 	record := state.Record{SchemaVersion: 1, RuntimeRoot: root, AppTag: manifest.Tag, Source: "github", ServiceName: serviceName, ServiceScope: scope, ServiceInstalled: serviceInstalled, Managed: true}
 	if serviceInstalled {
-		if _, err := service.Lifecycle(ctx, record, "status"); err != nil {
+		if err := service.VerifyRegistration(ctx, record); err != nil {
 			return state.Record{}, fmt.Errorf("declared service registration could not be verified: %w", err)
 		}
 	}

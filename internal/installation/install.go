@@ -121,6 +121,15 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 	if hasPrevious && filepath.Clean(previous.RuntimeRoot) != filepath.Clean(options.RuntimeRoot) {
 		return state.Record{}, errors.New("existing manager record points to a different runtime root")
 	}
+	if hasPrevious {
+		rootInfo, err := os.Lstat(options.RuntimeRoot)
+		if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+			return state.Record{}, errors.New("existing runtime root is not an ordinary directory")
+		}
+		if err := verifyManifest(previous.RuntimeRoot, previous.AppTag, target.Name, platform.AppAssetName(previous.AppTag, target)); err != nil {
+			return state.Record{}, fmt.Errorf("existing managed package verification failed: %w", err)
+		}
+	}
 	if hasPrevious && options.UpgradeOnly {
 		comparison, err := release.CompareTags(releaseInfo.Tag, previous.AppTag)
 		if err != nil {
@@ -130,9 +139,6 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 			return state.Record{}, errors.New("selected Release is older than the installed version")
 		}
 		if comparison == 0 {
-			if err := verifyManifest(previous.RuntimeRoot, previous.AppTag, target.Name, platform.AppAssetName(previous.AppTag, target)); err != nil {
-				return state.Record{}, fmt.Errorf("installed version matches latest but package verification failed: %w", err)
-			}
 			if progress != nil {
 				progress("up-to-date", 0, 0)
 			}
@@ -140,7 +146,7 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 		}
 	}
 	if !hasPrevious {
-		if _, err := os.Stat(options.RuntimeRoot); err == nil {
+		if _, err := os.Lstat(options.RuntimeRoot); err == nil {
 			return state.Record{}, errors.New("runtime root already exists; explicitly adopt it before updating")
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return state.Record{}, err

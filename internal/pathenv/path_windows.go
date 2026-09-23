@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -44,6 +47,9 @@ func Add(directory string) (bool, error) {
 	} else {
 		err = key.SetStringValue("Path", updated)
 	}
+	if err == nil {
+		notifyEnvironmentChanged()
+	}
 	return err == nil, err
 }
 
@@ -68,7 +74,26 @@ func Remove(directory string) error {
 	}
 	updated := strings.Join(kept, ";")
 	if valueType == registry.EXPAND_SZ {
-		return key.SetExpandStringValue("Path", updated)
+		err = key.SetExpandStringValue("Path", updated)
+	} else {
+		err = key.SetStringValue("Path", updated)
 	}
-	return key.SetStringValue("Path", updated)
+	if err == nil {
+		notifyEnvironmentChanged()
+	}
+	return err
+}
+
+// notifyEnvironmentChanged asks desktop shells to refresh their environment after a registry edit.
+// notifyEnvironmentChanged 在修改注册表后通知桌面 shell 刷新环境变量。
+func notifyEnvironmentChanged() {
+	// Broadcasting is advisory: the registry write already committed and remains owned if a shell ignores it.
+	// 广播属于通知性质；即使某个 shell 忽略通知，注册表写入仍已提交并保持所有权。
+	environment, err := windows.UTF16PtrFromString("Environment")
+	if err != nil {
+		return
+	}
+	procedure := windows.NewLazySystemDLL("user32.dll").NewProc("SendMessageTimeoutW")
+	_, _, _ = procedure.Call(0xffff, 0x001a, 0, uintptr(unsafe.Pointer(environment)), 0x0002, 1000, 0)
+	runtime.KeepAlive(environment)
 }

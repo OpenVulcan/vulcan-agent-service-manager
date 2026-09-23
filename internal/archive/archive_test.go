@@ -160,3 +160,14 @@ func TestValidateTarLink(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestTrackerRejectsWindowsDeviceNames prevents reserved device paths from entering ZIP extraction.
+// TestTrackerRejectsWindowsDeviceNames 防止保留设备名路径进入 ZIP 解压过程。
+func TestTrackerRejectsWindowsDeviceNames(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows device names are platform-specific")
+	}
+	if _, err := newTracker(true).target("app/CON", t.TempDir(), "app", 1); err == nil {
+		t.Fatal("Windows reserved device name was accepted")
+	}
+}

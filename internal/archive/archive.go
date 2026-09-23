@@ -96,7 +96,11 @@ func (t *tracker) target(name, destination, root string, size int64) (string, er
 	if clean == root {
 		return destination, nil
 	}
-	return filepath.Join(destination, filepath.FromSlash(strings.TrimPrefix(clean, root+"/"))), nil
+	relative := filepath.FromSlash(strings.TrimPrefix(clean, root+"/"))
+	if !filepath.IsLocal(relative) {
+		return "", fmt.Errorf("archive path is not local to the destination: %q", name)
+	}
+	return filepath.Join(destination, relative), nil
 }
 
 // filesystemCaseFold probes the new extraction directory for case-insensitive name lookup.
