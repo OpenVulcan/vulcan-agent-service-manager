@@ -73,6 +73,53 @@ func TestCanonicalMetadataAndMirrorBytes(t *testing.T) {
 	}
 }
 
+// TestRetaggedReleaseMetadata verifies that an empty tag response is refreshed by numeric release ID.
+// TestRetaggedReleaseMetadata 验证标签响应缺少资产时按数字发布标识重新获取，并拒绝身份不一致的结果。
+func TestRetaggedReleaseMetadata(t *testing.T) {
+	// The observed GitHub tag endpoint can omit assets that its numeric endpoint already lists.
+	// 实测 GitHub 标签接口可能漏掉数字发布接口已列出的资产。
+	wrongIdentity := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/repos/" + ManagerRepository + "/releases/tags/v0.1.0":
+			_ = json.NewEncoder(writer).Encode(map[string]any{"id": 7, "tag_name": "v0.1.0", "assets": []any{}})
+		case "/repos/" + ManagerRepository + "/releases/7":
+			resolvedTag := "v0.1.0"
+			if wrongIdentity {
+				resolvedTag = "v0.1.1"
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"id":       7,
+				"tag_name": resolvedTag,
+				"assets": []map[string]any{{
+					"name":                 "vasm-windows-x64.zip",
+					"browser_download_url": "https://github.com/OpenVulcan/vulcan-agent-service-manager/releases/download/v0.1.0/vasm-windows-x64.zip",
+					"size":                 1,
+					"digest":               "sha256:" + strings.Repeat("a", 64),
+				}},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := NewClient()
+	client.HTTP = server.Client()
+	client.APIBase = server.URL
+	client.Token = "private-test-token"
+	info, err := client.Fetch(context.Background(), ManagerRepository, "v0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := info.FindAsset("vasm-windows-x64.zip"); err != nil {
+		t.Fatal(err)
+	}
+	wrongIdentity = true
+	if _, err := client.Fetch(context.Background(), ManagerRepository, "v0.1.0"); err == nil {
+		t.Fatal("numeric release endpoint changed the requested identity")
+	}
+}
+
 // TestSourceAndVersionValidation refuses unsafe proxy bases and ambiguous version tags.
 // TestSourceAndVersionValidation 拒绝不安全的代理基址及含糊的版本标签。
 func TestSourceAndVersionValidation(t *testing.T) {

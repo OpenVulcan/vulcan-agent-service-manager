@@ -87,6 +87,43 @@ type Client struct {
 	Token string
 }
 
+// releaseAssetMetadata holds one asset entry from the canonical GitHub API.
+// releaseAssetMetadata 保存 GitHub 权威 API 返回的一条资产记录。
+type releaseAssetMetadata struct {
+	// Name is the published asset filename.
+	// Name 是已发布资产的文件名。
+	Name string `json:"name"`
+	// BrowserDownloadURL is the canonical download address.
+	// BrowserDownloadURL 是权威下载地址。
+	BrowserDownloadURL string `json:"browser_download_url"`
+	// Size is the published byte count.
+	// Size 是已发布的字节数。
+	Size int64 `json:"size"`
+	// Digest is GitHub's SHA-256 digest.
+	// Digest 是 GitHub 提供的 SHA-256 摘要。
+	Digest string `json:"digest"`
+}
+
+// releaseMetadata holds the identity and assets of one GitHub Release.
+// releaseMetadata 保存一个 GitHub Release 的身份和资产。
+type releaseMetadata struct {
+	// ID is the numeric release identifier used to re-read a stale tag response.
+	// ID 是标签响应缺少资产时重新读取的数字发布标识。
+	ID int64 `json:"id"`
+	// TagName is the published version tag.
+	// TagName 是已发布的版本标签。
+	TagName string `json:"tag_name"`
+	// Draft reports whether the release is unpublished.
+	// Draft 表示发布是否仍为草稿。
+	Draft bool `json:"draft"`
+	// Prerelease reports whether the release is marked preliminary.
+	// Prerelease 表示发布是否被标记为预发布。
+	Prerelease bool `json:"prerelease"`
+	// Assets lists the files attached to this release.
+	// Assets 列出此发布附带的文件。
+	Assets []releaseAssetMetadata `json:"assets"`
+}
+
 // NewClient returns a GitHub Release client with a request deadline and HTTPS-only redirects.
 // NewClient 返回带请求截止时间及仅限 HTTPS 重定向的 GitHub 发布客户端。
 func NewClient() *Client {
@@ -168,40 +205,21 @@ func (c *Client) Fetch(ctx context.Context, repository, tag string) (Release, er
 	}
 	metadataCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(metadataCtx, http.MethodGet, strings.TrimRight(c.APIBase, "/")+path, nil)
+	raw, err := c.fetchReleaseMetadata(metadataCtx, path)
 	if err != nil {
 		return Release{}, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "vasm-release-client")
-	if c.Token != "" && c.APIBase == "https://api.github.com" {
-		// Never forward a caller token to a mirror or a local test endpoint.
-		// 不向镜像或本地测试端点转发调用方令牌。
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return Release{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return Release{}, fmt.Errorf("GitHub release request failed: HTTP %d", resp.StatusCode)
-	}
-	// Limit metadata to a reasonable size so a damaged endpoint cannot consume unlimited memory.
-	// 限制元数据大小，避免异常端点无限占用内存。
-	var raw struct {
-		TagName    string `json:"tag_name"`
-		Draft      bool   `json:"draft"`
-		Prerelease bool   `json:"prerelease"`
-		Assets     []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Size               int64  `json:"size"`
-			Digest             string `json:"digest"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&raw); err != nil {
-		return Release{}, fmt.Errorf("decode GitHub release: %w", err)
+	if len(raw.Assets) == 0 && raw.ID > 0 {
+		// GitHub can serve a newly retagged release without assets by tag while its numeric release endpoint is complete.
+		// GitHub 按标签查询刚重建的发布时可能漏掉资产，而数字发布接口已有完整资产。
+		refreshed, refreshErr := c.fetchReleaseMetadata(metadataCtx, "/repos/"+repository+"/releases/"+strconv.FormatInt(raw.ID, 10))
+		if refreshErr != nil {
+			return Release{}, refreshErr
+		}
+		if refreshed.ID != raw.ID || refreshed.TagName != raw.TagName {
+			return Release{}, errors.New("release identity changed while resolving assets")
+		}
+		raw = refreshed
 	}
 	if err := ValidateTag(raw.TagName); err != nil {
 		return Release{}, err
@@ -231,6 +249,37 @@ func (c *Client) Fetch(ctx context.Context, repository, tag string) (Release, er
 		result.Assets[item.Name] = Asset{Name: item.Name, URL: item.BrowserDownloadURL, Size: item.Size, SHA256: strings.ToLower(hash)}
 	}
 	return result, nil
+}
+
+// fetchReleaseMetadata retrieves bounded release metadata from the configured official API.
+// fetchReleaseMetadata 从配置的权威 API 获取有大小限制的发布元数据，参数 path 为仓库内接口路径，返回值为解析结果或错误。
+func (c *Client) fetchReleaseMetadata(ctx context.Context, path string) (releaseMetadata, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.APIBase, "/")+path, nil)
+	if err != nil {
+		return releaseMetadata{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "vasm-release-client")
+	if c.Token != "" && c.APIBase == "https://api.github.com" {
+		// Never forward a caller token to a mirror or a local test endpoint.
+		// 不向镜像或本地测试端点转发调用方令牌。
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return releaseMetadata{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return releaseMetadata{}, fmt.Errorf("GitHub release request failed: HTTP %d", resp.StatusCode)
+	}
+	// Bound metadata parsing so an invalid endpoint cannot consume unlimited memory.
+	// 限制元数据解析体积，避免异常端点无限占用内存。
+	var raw releaseMetadata
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&raw); err != nil {
+		return releaseMetadata{}, fmt.Errorf("decode GitHub release: %w", err)
+	}
+	return raw, nil
 }
 
 // FindAsset returns one exact archive, rejecting releases that omit its digest.
