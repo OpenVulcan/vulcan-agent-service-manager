@@ -71,4 +71,4 @@ go vet ./...
 python -m unittest discover -s scripts/tests -p 'test_release.py' -v
 ```
 
-完整功能边界和后续跨仓库契约见[设计方案](docs/design/vasm-manager-design.md)，实施进度见 `docs/plan/`。
+完整功能边界和后续跨仓库契约见[设计方案](docs/design/vasm-manager-design.md)，实施记录见[已完成计划](docs/completed/20260923/01-VASM_MANAGER_IMPLEMENTATION.md)。
