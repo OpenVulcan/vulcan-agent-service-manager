@@ -121,6 +121,7 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 		return state.Record{}, readErr
 	}
 	hasPrevious := readErr == nil
+	retainedData := false
 	if hasPrevious && filepath.Clean(previous.RuntimeRoot) != filepath.Clean(options.RuntimeRoot) {
 		return state.Record{}, errors.New("existing manager record points to a different runtime root")
 	}
@@ -150,7 +151,10 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 	}
 	if !hasPrevious {
 		if _, err := os.Lstat(options.RuntimeRoot); err == nil {
-			return state.Record{}, errors.New("runtime root already exists; explicitly adopt it before updating")
+			if err := validateRetainedDataRoot(options.RuntimeRoot); err != nil {
+				return state.Record{}, fmt.Errorf("runtime root already exists; explicitly adopt a complete release or move this directory: %w", err)
+			}
+			retainedData = true
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return state.Record{}, err
 		}
@@ -196,7 +200,7 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 	if err := verifyManifest(stage, releaseInfo.Tag, target.Name, assetName); err != nil {
 		return state.Record{}, err
 	}
-	if hasPrevious {
+	if hasPrevious || retainedData {
 		if err := preserveOwnedData(options.RuntimeRoot, stage); err != nil {
 			return state.Record{}, err
 		}
@@ -303,7 +307,7 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 			resultErr = errors.Join(resultErr, fmt.Errorf("installation rollback incomplete; backup at %s: %w", workspace, errors.Join(recoveryErrors...)))
 		}
 	}()
-	if hasPrevious {
+	if hasPrevious || retainedData {
 		if err := os.Rename(options.RuntimeRoot, backup); err != nil {
 			return state.Record{}, err
 		}
@@ -437,10 +441,72 @@ func verifyManifest(root, tag, platformName, archiveName string) error {
 	return nil
 }
 
-// preserveOwnedData copies mutable configuration and skill state into the new staged tree.
-// preserveOwnedData 将可变配置及技能状态复制到新版本暂存目录。
+// validateRetainedDataRoot recognizes only the layout left by a keep-data uninstall.
+// validateRetainedDataRoot 只识别保留数据卸载后留下的目录布局，并拒绝未知路径以避免丢失用户文件。
+func validateRetainedDataRoot(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("retained data root is not an ordinary directory")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	foundConfigs := false
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "configs":
+			foundConfigs = true
+		case "logs", "lua_runtime", "bin":
+		default:
+			return fmt.Errorf("retained data root contains an unknown path %q", entry.Name())
+		}
+		if !entry.IsDir() {
+			return fmt.Errorf("retained data path %q is not an ordinary directory", entry.Name())
+		}
+	}
+	if !foundConfigs {
+		return errors.New("retained data root has no service configuration")
+	}
+	for _, name := range []string{"config.yaml", "client_budgets.yaml", "system_skills.json"} {
+		path := filepath.Join(root, "configs", name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("retained configuration %s is absent or not an ordinary file", name)
+		}
+	}
+	bin := filepath.Join(root, "bin")
+	if contents, err := os.ReadDir(bin); err == nil {
+		if len(contents) != 0 {
+			return errors.New("retained data root still contains packaged binaries")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	runtimeEntries, err := os.ReadDir(filepath.Join(root, "lua_runtime"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, entry := range runtimeEntries {
+		switch entry.Name() {
+		case "skills", "state", "databases", "userdata", "config", "system_lua_lib", "temp":
+		default:
+			return fmt.Errorf("retained Lua runtime contains an unknown path %q", entry.Name())
+		}
+		if !entry.IsDir() {
+			return fmt.Errorf("retained Lua runtime path %q is not an ordinary directory", entry.Name())
+		}
+	}
+	return nil
+}
+
+// preserveOwnedData copies mutable configuration, skills, databases, and runtime state into the new staged tree.
+// preserveOwnedData 将可变配置、技能、数据库及运行状态复制到新版本暂存目录。
 func preserveOwnedData(previousRoot, stagedRoot string) error {
-	for _, relative := range []string{"configs", "logs", filepath.Join("lua_runtime", "skills"), filepath.Join("lua_runtime", "state")} {
+	for _, relative := range []string{"configs", "logs", filepath.Join("lua_runtime", "skills"), filepath.Join("lua_runtime", "state"), filepath.Join("lua_runtime", "databases"), filepath.Join("lua_runtime", "userdata"), filepath.Join("lua_runtime", "config"), filepath.Join("lua_runtime", "system_lua_lib")} {
 		source := filepath.Join(previousRoot, relative)
 		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
 			continue

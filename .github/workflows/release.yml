@@ -166,8 +166,13 @@ jobs:
           "dist-bin/$BINARY" status --json
           "dist-bin/$BINARY" config show
           "dist-bin/$BINARY" skills list --layer ROOT
+          mkdir -p "$VASM_APP_ROOT/lua_runtime/databases"
+          printf 'retained\n' > "$VASM_APP_ROOT/lua_runtime/databases/vasm-smoke.txt"
           "dist-bin/$BINARY" uninstall
           test -f "$VASM_APP_ROOT/configs/config.yaml"
+          "dist-bin/$BINARY" install --yes --app-version v0.1.0 --prepared-archive "$prepared_archive" --runtime-root "$VASM_APP_ROOT" --vmm false
+          test "$(cat "$VASM_APP_ROOT/lua_runtime/databases/vasm-smoke.txt")" = retained
+          "dist-bin/$BINARY" uninstall
           python -c 'import os,sys; p=sys.argv[1]; os.unlink(p); os.rmdir(os.path.dirname(p))' "$prepared_archive"
       - uses: actions/upload-artifact@v4
         with:

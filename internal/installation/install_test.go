@@ -156,7 +156,7 @@ func TestInstallUpgradeRollback(t *testing.T) {
 	if err := appconfig.SetScalar(root, appconfig.Scalar{Key: "vmm_enable", Value: "true"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, relative := range []string{filepath.Join("lua_runtime", "skills", "installed.txt"), filepath.Join("lua_runtime", "state", "index.db"), filepath.Join("logs", "service.log")} {
+	for _, relative := range []string{filepath.Join("lua_runtime", "skills", "installed.txt"), filepath.Join("lua_runtime", "state", "index.db"), filepath.Join("lua_runtime", "databases", "user.db"), filepath.Join("lua_runtime", "userdata", "profile.json"), filepath.Join("lua_runtime", "config", "runtime.json"), filepath.Join("lua_runtime", "system_lua_lib", "custom.lua"), filepath.Join("logs", "service.log")} {
 		path := filepath.Join(root, relative)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -184,7 +184,7 @@ func TestInstallUpgradeRollback(t *testing.T) {
 	if err != nil || !bytes.Contains(config, []byte("vmm_enable: true")) {
 		t.Fatalf("user config not preserved: %s, %v", config, err)
 	}
-	for _, relative := range []string{filepath.Join("lua_runtime", "skills", "installed.txt"), filepath.Join("lua_runtime", "state", "index.db"), filepath.Join("logs", "service.log")} {
+	for _, relative := range []string{filepath.Join("lua_runtime", "skills", "installed.txt"), filepath.Join("lua_runtime", "state", "index.db"), filepath.Join("lua_runtime", "databases", "user.db"), filepath.Join("lua_runtime", "userdata", "profile.json"), filepath.Join("lua_runtime", "config", "runtime.json"), filepath.Join("lua_runtime", "system_lua_lib", "custom.lua"), filepath.Join("logs", "service.log")} {
 		content, err := os.ReadFile(filepath.Join(root, relative))
 		if err != nil || string(content) != "user data" {
 			t.Fatalf("persistent data %s not preserved: %q, %v", relative, content, err)
@@ -214,6 +214,32 @@ func TestInstallUpgradeRollback(t *testing.T) {
 	}
 	if _, err := os.Stat(serviceExecutable(root)); !os.IsNotExist(err) {
 		t.Fatalf("service binary remained after uninstall: %v", err)
+	}
+	unknown := filepath.Join(root, "unmanaged-user-file.txt")
+	if err := os.WriteFile(unknown, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corrupt = false
+	selected = second
+	options.Tag = second.tag
+	if _, err := manager.Install(context.Background(), options, nil); err == nil {
+		t.Fatal("reinstall accepted an unknown file that would be discarded")
+	}
+	if contents, err := os.ReadFile(unknown); err != nil || string(contents) != "keep me" {
+		t.Fatalf("rejected reinstall changed unknown data: %q, %v", contents, err)
+	}
+	if err := os.Remove(unknown); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled, err := manager.Install(context.Background(), options, nil)
+	if err != nil || reinstalled.AppTag != second.tag {
+		t.Fatalf("reinstall from retained data failed: record=%+v error=%v", reinstalled, err)
+	}
+	for _, relative := range []string{filepath.Join("lua_runtime", "skills", "installed.txt"), filepath.Join("lua_runtime", "state", "index.db"), filepath.Join("lua_runtime", "databases", "user.db"), filepath.Join("lua_runtime", "userdata", "profile.json"), filepath.Join("lua_runtime", "config", "runtime.json"), filepath.Join("lua_runtime", "system_lua_lib", "custom.lua"), filepath.Join("logs", "service.log")} {
+		contents, err := os.ReadFile(filepath.Join(root, relative))
+		if err != nil || string(contents) != "user data" {
+			t.Fatalf("retained data %s was lost during reinstall: %q, %v", relative, contents, err)
+		}
 	}
 }
 

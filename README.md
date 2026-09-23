@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-agent-service-man
 
 默认从 GitHub 下载。使用国内代理预设时，Windows 先设置 `$env:VASM_SOURCE='mirror'`，Unix 在脚本后附加 `-s -- --source mirror`；也可设置 `VASM_MIRROR_BASE` 或传入 `--mirror-base https://你的代理域名`。当前预设为 `https://gh-proxy.com`，属于第三方服务，必须主动选择。镜像只传输大文件；版本和 SHA-256 以 GitHub 官方 Release API 或官方 `.sha256` 文件为准。如果官方元数据不可达，安装会明确失败，不会暗中降低校验强度。
 
-脚本将管理器安装至 Windows `%LOCALAPPDATA%\OpenVulcan\vasm\bin\vasm.exe` 或 Unix `~/.local/bin/vasm`，然后打开 TUI。首次安装向导先选择下载源和版本并校验完整主程序包，再询问 VMM、技能、服务模式、安装目录和 PATH 设置；提交时再次对照官方摘要校验暂存包。管理菜单可接管已有前台安装或本机服务，并分别管理 ROOT 和 USER 技能。加入用户 PATH 由向导选项或 `vasm path add` 负责，新终端才会读取更新后的 PATH。脚本可通过 `VASM_VERSION=v0.1.7` 或 Unix `--version v0.1.7` 固定管理器版本。
+脚本将管理器安装至 Windows `%LOCALAPPDATA%\OpenVulcan\vasm\bin\vasm.exe` 或 Unix `~/.local/bin/vasm`，然后打开 TUI。首次安装向导先选择下载源和版本并校验完整主程序包，再询问 VMM、技能、服务模式、安装目录和 PATH 设置；提交时再次对照官方摘要校验暂存包。管理菜单可接管已有前台安装或本机服务，并分别管理 ROOT 和 USER 技能。加入用户 PATH 由向导选项或 `vasm path add` 负责，新终端才会读取更新后的 PATH。脚本可通过 `VASM_VERSION=v0.1.8` 或 Unix `--version v0.1.8` 固定管理器版本。
 
 ## 管理命令
 
@@ -59,7 +59,7 @@ HTTP/SSE 客户端使用 `Vulcan-Client-Match-Name` 请求头携带客户端名�
 
 `vasm update` 获取主程序最新正式 Release，并在版本未变化时跳过下载。`vasm update-self` 独立检查管理器最新正式 Release、校验对应资产后更新管理器；Windows 使用退出后的辅助进程替换运行中的程序。公开 GitHub API 被限流时，可选地提供 `GITHUB_TOKEN` 仅用于官方元数据请求；镜像仍只传输归档。
 
-升级安装在原目录旁暂存和验证新包，保留配置、日志以及 LuaSkills 技能和状态，初始化失败会恢复旧包。`vasm uninstall` 默认保留这些用户数据；只有明确传入 `--purge --yes` 才删除整个受管运行目录。卸载主程序不会移除管理器或其 PATH 条目，下载源和 PATH 选择保存在独立的管理器偏好文件中。
+升级安装在原目录旁暂存和验证新包，保留配置、日志以及 LuaSkills 技能、状态、数据库与用户数据，初始化失败会恢复旧包。`vasm uninstall` 默认保留这些用户数据；同目录重装会检查残留目录，并在出现未知文件时拒绝覆盖，避免丢失数据。只有明确传入 `--purge --yes` 才删除整个受管运行目录。卸载主程序不会移除管理器或其 PATH 条目，下载源和 PATH 选择保存在独立的管理器偏好文件中。
 
 ## 发布与开发
 
