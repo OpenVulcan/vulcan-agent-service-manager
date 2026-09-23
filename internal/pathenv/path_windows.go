@@ -20,6 +20,9 @@ func Add(directory string) (bool, error) {
 	if !filepath.IsAbs(directory) {
 		return false, errors.New("PATH entry must be absolute")
 	}
+	if strings.Contains(directory, ";") {
+		return false, errors.New("Windows PATH directory cannot contain a semicolon")
+	}
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		return false, err

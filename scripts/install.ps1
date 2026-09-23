@@ -1,5 +1,6 @@
 ﻿# Download, verify, and launch only the standalone vasm manager.
 # 仅下载、校验并启动独立的 vasm 管理器。
+& {
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -99,4 +100,5 @@ try {
     if ($resolvedTemporaryDirectory.StartsWith($resolvedTempRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -and [System.IO.Path]::GetFileName($resolvedTemporaryDirectory) -match '^vasm-bootstrap-[0-9a-f]{32}$') {
         Remove-Item -LiteralPath $resolvedTemporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
 }

@@ -88,8 +88,8 @@ func EnsureAbsent(ctx context.Context, record state.Record) error {
 	}
 }
 
-// VerifyRegistration confirms an adopted native service has its actual platform registration.
-// VerifyRegistration 确认接管的本机服务确实拥有对应平台的注册项。
+// VerifyRegistration confirms an adopted native service runs the selected managed release root.
+// VerifyRegistration 确认接管的本机服务确实指向选定的受管发布目录。
 func VerifyRegistration(ctx context.Context, record state.Record) error {
 	if err := ValidateName(record.ServiceName); err != nil {
 		return err
@@ -97,18 +97,12 @@ func VerifyRegistration(ctx context.Context, record state.Record) error {
 	if record.ServiceScope != "user" && record.ServiceScope != "system" {
 		return errors.New("native service scope must be user or system")
 	}
-	if runtime.GOOS != "windows" {
-		definition, err := nativeDefinitionPath(record)
-		if err != nil {
-			return err
-		}
-		info, err := os.Lstat(definition)
-		if err != nil {
-			return fmt.Errorf("native service definition is unavailable: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return errors.New("native service definition is not a regular file")
-		}
+	present, owned, err := registrationAdoptMatches(ctx, record)
+	if err != nil {
+		return fmt.Errorf("cannot inspect native registration: %w", err)
+	}
+	if !present || !owned {
+		return errors.New("native service registration does not point to the selected release")
 	}
 	if _, err := Lifecycle(ctx, record, "status"); err != nil {
 		return fmt.Errorf("native service status could not be verified: %w", err)

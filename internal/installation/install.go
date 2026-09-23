@@ -317,6 +317,12 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 			progress("install-service", 0, 0)
 		}
 		if _, err := service.Install(ctx, current, options.Startup, false); err != nil {
+			if errors.Is(err, service.ErrRegistrationUncertain) {
+				// Keep the verified package available so the native registration can be inspected or adopted.
+				// 保留已校验发布包，以便检查或接管可能残留的本机注册项。
+				committed = true
+				return state.Record{}, fmt.Errorf("native service state needs inspection; package retained at %s: %w", options.RuntimeRoot, err)
+			}
 			return state.Record{}, err
 		}
 		newServiceRegistered = true

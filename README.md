@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-agent-service-man
 
 默认从 GitHub 下载。使用国内代理预设时，Windows 先设置 `$env:VASM_SOURCE='mirror'`，Unix 在脚本后附加 `-s -- --source mirror`；也可设置 `VASM_MIRROR_BASE` 或传入 `--mirror-base https://你的代理域名`。当前预设为 `https://gh-proxy.com`，属于第三方服务，必须主动选择。镜像只传输大文件；版本和 SHA-256 以 GitHub 官方 Release API 或官方 `.sha256` 文件为准。如果官方元数据不可达，安装会明确失败，不会暗中降低校验强度。
 
-脚本将管理器安装至 Windows `%LOCALAPPDATA%\OpenVulcan\vasm\bin\vasm.exe` 或 Unix `~/.local/bin/vasm`，然后打开 TUI。加入用户 PATH 由向导选项或 `vasm path add` 负责，新终端才会读取更新后的 PATH。脚本可通过 `VASM_VERSION=v0.1.4` 或 Unix `--version v0.1.4` 固定管理器版本。
+脚本将管理器安装至 Windows `%LOCALAPPDATA%\OpenVulcan\vasm\bin\vasm.exe` 或 Unix `~/.local/bin/vasm`，然后打开 TUI。加入用户 PATH 由向导选项或 `vasm path add` 负责，新终端才会读取更新后的 PATH。脚本可通过 `VASM_VERSION=v0.1.5` 或 Unix `--version v0.1.5` 固定管理器版本。
 
 ## 管理命令
 

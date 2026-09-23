@@ -461,17 +461,45 @@ func skillsCommand(ctx context.Context, stateFile string, args []string, output 
 	if len(args) < 1 {
 		return errors.New("skills requires list, install, update, or uninstall")
 	}
+	action := args[0]
+	layer := "USER"
+	positional := args[1:]
+	if len(positional) >= 2 && positional[len(positional)-2] == "--layer" {
+		layer = strings.ToUpper(positional[len(positional)-1])
+		positional = positional[:len(positional)-2]
+	}
+	if layer != "ROOT" && layer != "USER" {
+		return errors.New("skill layer must be ROOT or USER")
+	}
+	for _, value := range positional {
+		if value == "" || strings.HasPrefix(value, "--") {
+			return errors.New("skill positional arguments must be nonempty and precede --layer")
+		}
+	}
+	expectedArgs := 0
+	switch action {
+	case "list":
+	case "install":
+		expectedArgs = 1
+	case "update":
+		if layer == "USER" {
+			expectedArgs = 1
+		}
+	case "uninstall":
+		if layer == "ROOT" {
+			return errors.New("ROOT layer does not support skill uninstall")
+		}
+		expectedArgs = 1
+	default:
+		return fmt.Errorf("unsupported skill action %q", action)
+	}
+	if len(positional) != expectedArgs {
+		return fmt.Errorf("unexpected arguments for %s skill action %s", layer, action)
+	}
 	record, err := state.Load(stateFile)
 	if err != nil {
 		return err
 	}
-	layer := "USER"
-	for index := 0; index+1 < len(args); index++ {
-		if args[index] == "--layer" {
-			layer = strings.ToUpper(args[index+1])
-		}
-	}
-	action := args[0]
 	if layer == "ROOT" {
 		switch action {
 		case "list":
@@ -482,10 +510,7 @@ func skillsCommand(ctx context.Context, stateFile string, args []string, output 
 			_, err = output.Write(contents)
 			return err
 		case "install":
-			if len(args) < 2 || strings.HasPrefix(args[1], "--") {
-				return errors.New("ROOT install requires a GitHub source")
-			}
-			text, err := service.Run(ctx, record.RuntimeRoot, "--install-root-skill", args[1], "--source-type", "github", "--runtime-root", record.RuntimeRoot)
+			text, err := service.Run(ctx, record.RuntimeRoot, "--install-root-skill", positional[0], "--source-type", "github", "--runtime-root", record.RuntimeRoot)
 			fmt.Fprint(output, text)
 			return err
 		case "update":
@@ -496,21 +521,12 @@ func skillsCommand(ctx context.Context, stateFile string, args []string, output 
 			return errors.New("ROOT layer only supports list, install, and update-all")
 		}
 	}
-	if layer != "USER" {
-		return errors.New("skill layer must be ROOT or USER")
-	}
 	request := map[string]any{"action": action}
 	if action == "install" {
-		if len(args) < 2 || strings.HasPrefix(args[1], "--") {
-			return errors.New("USER install requires a GitHub source")
-		}
-		request["source"] = args[1]
+		request["source"] = positional[0]
 		request["source_type"] = "github"
 	} else if action == "update" || action == "uninstall" {
-		if len(args) < 2 || strings.HasPrefix(args[1], "--") {
-			return errors.New("USER update/uninstall requires a skill ID")
-		}
-		request["skill_id"] = args[1]
+		request["skill_id"] = positional[0]
 	} else if action != "list" {
 		return fmt.Errorf("unsupported skill action %q", action)
 	}

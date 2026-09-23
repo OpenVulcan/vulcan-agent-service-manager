@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,10 @@ import (
 
 	"github.com/OpenVulcan/vulcan-agent-service-manager/internal/state"
 )
+
+// ErrRegistrationUncertain means a failed install may have left a native registration needing inspection.
+// ErrRegistrationUncertain 表示失败的安装可能留下需要人工检查的本机注册项。
+var ErrRegistrationUncertain = errors.New("native service registration could not be safely rolled back")
 
 // Executable returns the service binary at the verified release layout.
 // Executable 返回已校验发布布局中的服务程序路径。
@@ -75,15 +80,25 @@ func Install(ctx context.Context, record state.Record, startup string, start boo
 	}
 	output, err := Run(ctx, record.RuntimeRoot, args...)
 	if err != nil {
-		// The service command may fail after creating its native registration.
-		// 服务命令可能在创建本机注册项后失败，因此只清理预检确认原本不存在的名称。
+		// The preflight absence check is not ownership proof after a concurrent registration.
+		// 预检时不存在同名服务，不能证明并发注册后出现的条目归本次安装所有。
+		present, owned, inspectionErr := registrationMatches(ctx, record, startup)
+		if inspectionErr != nil {
+			return output, fmt.Errorf("%w: install failed: %v; registration inspection failed: %v", ErrRegistrationUncertain, err, inspectionErr)
+		}
+		if !present {
+			return output, err
+		}
+		if !owned {
+			return output, fmt.Errorf("%w: install failed: %v; a different registration now occupies %s", ErrRegistrationUncertain, err, record.ServiceName)
+		}
 		registered := record
 		registered.ServiceInstalled = true
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		_, cleanupErr := Lifecycle(cleanupCtx, registered, "uninstall")
 		if cleanupErr != nil {
-			return output, fmt.Errorf("native service install failed: %w; cleanup also failed: %v", err, cleanupErr)
+			return output, fmt.Errorf("%w: install failed: %v; owned registration cleanup failed: %v", ErrRegistrationUncertain, err, cleanupErr)
 		}
 		return output, err
 	}
