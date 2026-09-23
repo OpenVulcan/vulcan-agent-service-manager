@@ -207,7 +207,23 @@ PowerShell 的 `irm ... | iex` 场景通过 `VASM_SOURCE`、`VASM_MIRROR_BASE`�
 
 ## 11. 技术结构与发布流程
 
-建议 Rust 单程序，模块按职责分为终端界面、命令解析、发布源、下载校验、归档验证、安装事务、安装记录、主程序命令适配、平台集成和诊断。TUI 建议采用 Ratatui + Crossterm；事件循环与长时间下载任务分离，界面从只读状态快照绘制，所有操作通过同一应用服务层。这一库选择在实施前按目标平台编译和终端兼容性验证，不能为了界面效果引入主程序运行依赖。
+### 11.1 语言选型：推荐 Go，待最终确认
+
+本仓库是独立程序；它通过发布清单、文件和子进程命令与 Rust 主程序交互，没有共享 Rust 类型、ABI 或需要复用的主程序 crate。因此没有“主程序用 Rust，安装器也必须用 Rust”的技术约束。
+
+| 维度 | Go | Rust |
+| --- | --- | --- |
+| 终端界面 | Bubble Tea v2 与 Bubbles 提供状态更新、表单和进度组件，适合向导与管理页 | Ratatui + Crossterm 同样成熟，布局和绘制控制更细 |
+| 下载、归档、摘要、签名 | `net/http`、`archive/zip`、`archive/tar`、`crypto/sha256`、`crypto/ed25519` 均由标准库提供 | 也能可靠实现，但通常需要分别引入第三方 crate |
+| 五平台构建 | 保持纯 Go 且 `CGO_ENABLED=0` 时可用 `GOOS/GOARCH` 编译目标二进制，不要求安装主程序的 C 运行库 | 同样能覆盖目标平台；原生依赖与 Windows CRT 的打包需要额外核对 |
+| 运行开销 | 单文件分发方便，但包含 Go 运行时与垃圾回收；实际体积和内存需测量 | 通常更便于控制二进制和运行时开销，具体数值也需测量 |
+| 与主程序交互 | 通过稳定 JSON 管理契约调用主程序，语言无影响 | 可共享 Rust 代码，但会让独立仓库重新耦合主程序内部实现；不建议以此为理由选 Rust |
+
+推荐将 `vasm` 实现为纯 Go 单程序，TUI 采用 Bubble Tea v2，所需通用组件采用对应版本的 Bubbles；下载、校验、归档和签名优先使用标准库。该选择最契合独立安装器的网络、文件和终端职责。`CGO_ENABLED=0` 是目标约束，依赖加入时必须验证其确实能在五个平台无 cgo 编译。Rust 仍是可行备选，尤其当实测表明 Go 产物体积或常驻内存不满足发布目标时；不能在没有测量的情况下声称某一语言一定更小或更快。
+
+这是核心技术选型，当前仅形成推荐，待用户确认后才创建 `go.mod` 或引入 TUI 依赖。无论最终语言如何，模块按终端界面、命令解析、发布源、下载校验、归档验证、安装事务、安装记录、主程序命令适配、平台集成和诊断划分。事件循环与长时间下载任务分离，界面从只读状态快照绘制，TUI 和 CLI 共用同一应用服务层。跨平台编译只能证明产物可构建，五个平台的解包、终端和服务行为仍需原生验证。
+
+### 11.2 发布流程
 
 管理器仓库的工作流与主程序仓库解耦：手动输入已有管理器标签，按五个平台矩阵执行静态检查、单元测试、原生编译、解包运行测试和脚本模拟下载测试；聚合校验全部资产及 SHA-256；发布完成后从 GitHub 官方 URL 实际下载并运行 `vasm --version` 与 `vasm doctor --json`。标签推送本身不触发发布。镜像同步另做独立流程，只有全部资产与摘要一致才更新其 `latest` 指针。
 
@@ -236,4 +252,7 @@ PowerShell 的 `irm ... | iex` 场景通过 `VASM_SOURCE`、`VASM_MIRROR_BASE`�
 - [主程序客户端预算结构](https://github.com/OpenVulcan/vulcan-agent-service/blob/be74e74aaf2e07a01e6090e8c24d935a97b4e74b/src/config/client_budget/types.rs)
 - [GitHub 最新版固定资产链接](https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases)
 - [GitHub Release 资产摘要字段](https://docs.github.com/en/rest/releases/assets)
+- [Go 目标平台与架构](https://go.dev/doc/install/source)
+- [Go cgo 编译开关](https://go.dev/cmd/cgo/)
+- [Bubble Tea v2 官方说明](https://github.com/charmbracelet/bubbletea/blob/main/README.md)
 - [Ratatui 终端后端](https://www.ratatui.rs/concepts/backends/)
