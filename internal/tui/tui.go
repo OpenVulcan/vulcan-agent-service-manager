@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -67,6 +68,24 @@ type model struct {
 	// tag is a custom application Release tag.
 	// tag 是自定义应用发布标签。
 	tag string
+	// preparedTag pins the exact official Release selected during the first download phase.
+	// preparedTag 固定首次下载阶段选定的官方发布标签。
+	preparedTag string
+	// preparedArchive is the verified package retained until installation or TUI exit.
+	// preparedArchive 是保留至安装或退出 TUI 的已校验归档。
+	preparedArchive string
+	// preparedAsset is the exact published archive name shown before configuration.
+	// preparedAsset 是配置前展示的准确发布归档名称。
+	preparedAsset string
+	// preparedBytes is the official published archive size shown to the user.
+	// preparedBytes 是向用户展示的官方发布归档字节数。
+	preparedBytes int64
+	// pendingPrepare marks the current operation as the first download phase.
+	// pendingPrepare 标记当前操作属于首次下载阶段。
+	pendingPrepare bool
+	// pendingInstall marks the current operation as the commit of a prepared package.
+	// pendingInstall 标记当前操作正在提交已预取的发布包。
+	pendingInstall bool
 	// root is an optional absolute install destination.
 	// root 是可选的安装目标绝对路径。
 	root string
@@ -181,8 +200,22 @@ func Run(parent context.Context, runner Runner) error {
 		}
 	}
 	program := tea.NewProgram(initial)
-	_, err := program.Run()
+	final, err := program.Run()
+	cancel()
+	if last, ok := final.(model); ok {
+		cleanupPreparedArchive(last.preparedArchive)
+	}
 	return err
+}
+
+// cleanupPreparedArchive removes only a TUI-owned archive and its empty temporary directory.
+// cleanupPreparedArchive 只删除 TUI 持有的归档及其空暂存目录。
+func cleanupPreparedArchive(archivePath string) {
+	if archivePath == "" || !strings.HasPrefix(filepath.Base(filepath.Dir(archivePath)), ".vasm-prepared-") {
+		return
+	}
+	_ = os.Remove(archivePath)
+	_ = os.Remove(filepath.Dir(archivePath))
 }
 
 // Init supplies no automatic command because network work requires a user choice.
@@ -199,6 +232,42 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = item.Height
 		return m, nil
 	case operationResult:
+		if m.pendingPrepare {
+			m.pendingPrepare = false
+			if item.err == nil {
+				var prepared struct {
+					// Tag is the exact downloaded application Release.
+					// Tag 是已下载应用程序的准确发布标签。
+					Tag string `json:"tag"`
+					// ArchivePath is the temporary verified package path.
+					// ArchivePath 是暂存的已校验归档路径。
+					ArchivePath string `json:"archive_path"`
+					// AssetName is the exact published archive filename.
+					// AssetName 是准确的发布归档文件名。
+					AssetName string `json:"asset_name"`
+					// AssetSize is the official published archive size.
+					// AssetSize 是官方发布归档大小。
+					AssetSize int64 `json:"asset_size"`
+				}
+				if err := json.Unmarshal([]byte(item.output), &prepared); err == nil && prepared.Tag != "" && prepared.ArchivePath != "" && prepared.AssetName != "" && prepared.AssetSize > 0 {
+					m.preparedTag = prepared.Tag
+					m.preparedArchive = prepared.ArchivePath
+					m.preparedAsset = prepared.AssetName
+					m.preparedBytes = prepared.AssetSize
+					m.page, m.cursor = "wizard", 0
+					m.events = nil
+					return m, nil
+				}
+				item.err = fmt.Errorf("cannot decode the verified package result")
+			}
+		}
+		if m.pendingInstall {
+			m.pendingInstall = false
+			if item.err == nil {
+				cleanupPreparedArchive(m.preparedArchive)
+				m.preparedArchive, m.preparedTag, m.preparedAsset, m.preparedBytes = "", "", "", 0
+			}
+		}
 		m.page = "result"
 		m.result = item.output
 		m.errorText = ""
@@ -228,6 +297,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m.execute(m.pendingCommand)
 			}
 			if key == "n" || key == "N" || key == "esc" {
+				m.pendingInstall = false
 				m.page, m.cursor = "home", 0
 			}
 			return m, nil
@@ -239,6 +309,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.page == "home" {
 				m.cancel()
 				return m, tea.Quit
+			}
+			if m.page == "wizard" && m.preparedTag != "" {
+				cleanupPreparedArchive(m.preparedArchive)
+				m.preparedArchive, m.preparedTag, m.preparedAsset, m.preparedBytes = "", "", "", 0
+				m.cursor = 0
+				return m, nil
 			}
 			m.page, m.cursor = "home", 0
 			return m, nil
@@ -266,7 +342,17 @@ func (m model) View() tea.View {
 	builder.WriteString("────────────────────────────────────────\n")
 	switch m.page {
 	case "wizard":
-		builder.WriteString("安装 / 更新向导  ·  ↑↓选择，空格切换，Enter 编辑或安装\n\n")
+		builder.WriteString("安装向导  ·  ↑↓选择，空格切换，Enter 确认\n")
+		if m.preparedTag != "" {
+			source := "GitHub 官方"
+			if m.source == 1 {
+				source = "国内代理预设"
+			} else if m.source == 2 {
+				source = m.mirror
+			}
+			builder.WriteString(fmt.Sprintf("已校验主程序包: %s  ·  %s (%d 字节)  ·  下载源: %s\n", m.preparedTag, m.preparedAsset, m.preparedBytes, source))
+		}
+		builder.WriteString("\n")
 		for index, row := range m.wizardRows() {
 			prefix := "  "
 			if index == m.cursor {
@@ -442,11 +528,19 @@ func (m model) selectMenu() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// wizardRows presents every explicit choice before a service download begins.
-// wizardRows 在服务下载开始前展示所有明确选项。
+// wizardRows presents download choices first, then configuration choices after verification.
+// wizardRows 先展示下载选项，完成校验后再展示安装配置选项。
 func (m model) wizardRows() []string {
 	sources := []string{"GitHub 官方", "国内代理预设", "自定义 HTTPS 代理"}
 	versions := []string{"最新正式版", "指定标签: " + m.tag}
+	if m.preparedTag == "" {
+		return []string{
+			"下载源: " + sources[m.source],
+			"自定义镜像: " + m.mirror,
+			"主程序版本: " + versions[m.version],
+			"下载并校验主程序包，然后配置安装",
+		}
+	}
 	modes := []string{"前台命令行", "用户服务", "系统服务"}
 	if runtime.GOOS == "windows" {
 		modes[1] = "用户服务（Windows 不支持）"
@@ -460,9 +554,6 @@ func (m model) wizardRows() []string {
 		vmmURL = m.vmmURL
 	}
 	return []string{
-		"下载源: " + sources[m.source],
-		"自定义镜像: " + m.mirror,
-		"主程序版本: " + versions[m.version],
 		fmt.Sprintf("对接 VMM: %t", m.vmm),
 		"VMM 地址: " + vmmURL,
 		"运行方式: " + modes[m.mode],
@@ -471,12 +562,12 @@ func (m model) wizardRows() []string {
 		"系统技能选择（default/none/逗号分隔名称）: " + m.skillNames,
 		fmt.Sprintf("加入用户 PATH: %t", m.addPath),
 		"安装目录: " + root,
-		"开始下载、校验和安装",
+		"安装已校验的主程序包",
 	}
 }
 
-// updateWizard edits one install choice or starts the confirmed transaction.
-// updateWizard 修改一项安装选项或启动已确认的事务。
+// updateWizard downloads the selected Release before editing and committing install settings.
+// updateWizard 先下载选定发布包，再编辑并提交安装设置。
 func (m model) updateWizard(key string) (tea.Model, tea.Cmd) {
 	rows := m.wizardRows()
 	if key == "up" || key == "k" {
@@ -490,54 +581,69 @@ func (m model) updateWizard(key string) (tea.Model, tea.Cmd) {
 	if key != "enter" && key != " " && key != "space" {
 		return m, nil
 	}
+	if m.preparedTag == "" {
+		switch m.cursor {
+		case 0:
+			m.source = (m.source + 1) % 3
+		case 1:
+			m.beginInput("自定义 HTTPS 代理基址", nil, m.mirror)
+		case 2:
+			m.version = (m.version + 1) % 2
+			if m.version == 1 && m.tag == "" {
+				m.beginInput("主程序标签，例如 v0.1.0", nil, "v0.1.0")
+			}
+		case 3:
+			if m.source == 2 && m.mirror == "" {
+				m.beginInput("自定义 HTTPS 代理基址", nil, "https://")
+				return m, nil
+			}
+			if m.version == 1 && m.tag == "" {
+				m.beginInput("主程序标签，例如 v0.1.0", nil, "v0.1.0")
+				return m, nil
+			}
+			command := []string{"--internal-prepare-install"}
+			if m.source > 0 {
+				command = append(command, "--source", "mirror")
+				if m.source == 2 {
+					command = append(command, "--mirror-base", m.mirror)
+				}
+			}
+			if m.version == 1 {
+				command = append(command, "--app-version", m.tag)
+			}
+			m.pendingPrepare = true
+			return m.execute(command)
+		}
+		return m, nil
+	}
 	switch m.cursor {
 	case 0:
-		m.source = (m.source + 1) % 3
-	case 1:
-		m.beginInput("自定义 HTTPS 代理基址", nil, m.mirror)
-	case 2:
-		m.version = (m.version + 1) % 2
-		if m.version == 1 && m.tag == "" {
-			m.beginInput("主程序标签，例如 v0.1.0", nil, "v0.1.0")
-		}
-	case 3:
 		m.vmm = !m.vmm
-	case 4:
+	case 1:
 		m.beginInput("VMM HTTP/HTTPS 地址；留空使用主程序默认地址", nil, m.vmmURL)
-	case 5:
+	case 2:
 		if runtime.GOOS == "windows" {
 			m.mode = 2 - m.mode
 		} else {
 			m.mode = (m.mode + 1) % 3
 		}
-	case 6:
+	case 3:
 		m.autostart = !m.autostart
-	case 7:
+	case 4:
 		m.initSkills = !m.initSkills
-	case 8:
+	case 5:
 		m.beginInput("系统技能名称：default、none 或逗号分隔名称；安装时按发布包核对", nil, m.skillNames)
-	case 9:
+	case 6:
 		m.addPath = !m.addPath
-	case 10:
+	case 7:
 		m.beginInput("安装目录绝对路径；留空使用默认目录", nil, m.root)
-	case 11:
-		if m.source == 2 && m.mirror == "" {
-			m.beginInput("自定义 HTTPS 代理基址", nil, "https://")
-			return m, nil
-		}
-		if m.version == 1 && m.tag == "" {
-			m.beginInput("主程序标签，例如 v0.1.0", nil, "v0.1.0")
-			return m, nil
-		}
-		command := []string{"install", "--yes"}
+	case 8:
+		command := []string{"install", "--yes", "--app-version", m.preparedTag, "--prepared-archive", m.preparedArchive}
 		if m.source > 0 {
 			command = append(command, "--source", "mirror")
 			if m.source == 2 {
 				command = append(command, "--mirror-base", m.mirror)
 			}
-		}
-		if m.version == 1 {
-			command = append(command, "--app-version", m.tag)
 		}
 		if m.root != "" {
 			command = append(command, "--runtime-root", m.root)
@@ -566,7 +672,27 @@ func (m model) updateWizard(key string) (tea.Model, tea.Cmd) {
 				command = append(command, "--startup", "auto")
 			}
 		}
-		return m.execute(command)
+		mode := "前台命令"
+		if m.mode == 1 {
+			mode = "用户服务"
+		} else if m.mode == 2 {
+			mode = "系统服务"
+		}
+		root := m.root
+		if root == "" {
+			root = "默认用户目录"
+		}
+		source := "GitHub 官方"
+		if m.source == 1 {
+			source = "国内代理预设"
+		} else if m.source == 2 {
+			source = m.mirror
+		}
+		m.pendingInstall = true
+		m.pendingCommand = command
+		m.pendingLabel = fmt.Sprintf("即将安装 %s (%s)\n下载源: %s\n安装目录: %s\n运行方式: %s；开机自启: %t\nVMM: %t；系统技能: %s；立即初始化: %t\n加入 PATH: %t", m.preparedTag, m.preparedAsset, source, root, mode, m.autostart, m.vmm, m.skillNames, m.initSkills, m.addPath)
+		m.page = "confirm"
+		return m, nil
 	}
 	return m, nil
 }
@@ -615,14 +741,16 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		switch m.cursor {
 		case 1:
-			m.mirror = m.inputText
+			if m.preparedTag == "" {
+				m.mirror = m.inputText
+			} else {
+				m.vmmURL = m.inputText
+			}
 		case 2:
 			m.tag = m.inputText
-		case 4:
-			m.vmmURL = m.inputText
-		case 8:
+		case 5:
 			m.skillNames = m.inputText
-		case 10:
+		case 7:
 			m.root = m.inputText
 		}
 		m.page = "wizard"

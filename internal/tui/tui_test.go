@@ -9,29 +9,49 @@ import (
 	"time"
 )
 
-// TestWizardRoutesChoicesToInstall checks the visible final row constructs the selected CLI operation.
-// TestWizardRoutesChoicesToInstall 检查可见的向导最后一行构造出用户选择的命令行操作。
+// TestWizardRoutesChoicesToInstall checks the package download precedes settings and pins the selected Release.
+// TestWizardRoutesChoicesToInstall 检查先下载发布包再配置安装，并固定选定的发布版本。
 func TestWizardRoutesChoicesToInstall(t *testing.T) {
-	commands := make(chan []string, 1)
-	// runner captures the command without touching the network or filesystem.
-	// runner 捕获命令，不访问网络或文件系统。
-	runner := func(_ context.Context, command []string, _ io.Writer) error {
+	commands := make(chan []string, 2)
+	// runner simulates the verified package response without touching the network or filesystem.
+	// runner 模拟已校验发布包响应，不访问网络或文件系统。
+	runner := func(_ context.Context, command []string, output io.Writer) error {
 		commands <- command
+		if command[0] == "--internal-prepare-install" {
+			_, _ = io.WriteString(output, `{"tag":"v0.1.0","archive_path":"/tmp/vasm-test/verified.tar.gz","asset_name":"verified.tar.gz","asset_size":100}`)
+		}
 		return nil
 	}
-	initial := model{ctx: context.Background(), runner: runner, page: "wizard", cursor: 11, source: 2, mirror: "https://gh-proxy.com", version: 1, tag: "v0.1.0", root: "/tmp/vasm-test", vmm: true, vmmURL: "http://127.0.0.1:17625", mode: 2, autostart: true, initSkills: true, skillNames: "vulcan-file", addPath: true}
-	if len(initial.wizardRows()) != 12 {
-		t.Fatal("wizard row count changed without routing update")
+	initial := model{ctx: context.Background(), runner: runner, page: "wizard", cursor: 3, source: 2, mirror: "https://gh-proxy.com", version: 1, tag: "v0.1.0", root: "/tmp/vasm-test", vmm: true, vmmURL: "http://127.0.0.1:17625", mode: 2, autostart: true, initSkills: true, skillNames: "vulcan-file", addPath: true}
+	if len(initial.wizardRows()) != 4 {
+		t.Fatal("download stage row count changed without routing update")
 	}
-	_, _ = initial.updateWizard("enter")
-	want := []string{"install", "--yes", "--source", "mirror", "--mirror-base", "https://gh-proxy.com", "--app-version", "v0.1.0", "--runtime-root", "/tmp/vasm-test", "--vmm", "true", "--vmm-url", "http://127.0.0.1:17625", "--init-skills", "--skills", "vulcan-file", "--add-path", "--service", "--scope", "system", "--startup", "auto"}
+	updated, wait := initial.updateWizard("enter")
+	prepared := updated.(model)
+	prepareWant := []string{"--internal-prepare-install", "--source", "mirror", "--mirror-base", "https://gh-proxy.com", "--app-version", "v0.1.0"}
 	select {
 	case actual := <-commands:
-		if !reflect.DeepEqual(actual, want) {
-			t.Fatalf("wizard command mismatch:\nactual=%v\nwant=%v", actual, want)
+		if !reflect.DeepEqual(actual, prepareWant) {
+			t.Fatalf("prepare command mismatch: actual=%v want=%v", actual, prepareWant)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("wizard did not dispatch the install command")
+		t.Fatal("wizard did not dispatch the package download")
+	}
+	configured := prepared
+	for attempt := 0; attempt < 3 && configured.page != "wizard"; attempt++ {
+		stage, next := configured.Update(wait())
+		configured = stage.(model)
+		wait = next
+	}
+	if configured.page != "wizard" || len(configured.wizardRows()) != 9 || configured.preparedTag != "v0.1.0" {
+		t.Fatalf("verified package did not open the settings stage: %+v", configured)
+	}
+	configured.cursor = 8
+	confirmation, _ := configured.updateWizard("enter")
+	selected := confirmation.(model)
+	want := []string{"install", "--yes", "--app-version", "v0.1.0", "--prepared-archive", "/tmp/vasm-test/verified.tar.gz", "--source", "mirror", "--mirror-base", "https://gh-proxy.com", "--runtime-root", "/tmp/vasm-test", "--vmm", "true", "--vmm-url", "http://127.0.0.1:17625", "--init-skills", "--skills", "vulcan-file", "--add-path", "--service", "--scope", "system", "--startup", "auto"}
+	if selected.page != "confirm" || !reflect.DeepEqual(selected.pendingCommand, want) {
+		t.Fatalf("wizard did not preview the selected install command: page=%s actual=%v want=%v", selected.page, selected.pendingCommand, want)
 	}
 }
 

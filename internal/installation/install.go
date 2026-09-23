@@ -64,6 +64,9 @@ type Options struct {
 	// UpgradeOnly skips an unchanged version and refuses an older latest Release.
 	// UpgradeOnly 跳过相同版本，并拒绝较旧的最新版发布。
 	UpgradeOnly bool
+	// PreparedArchive is an already downloaded archive that is rechecked against official Release metadata.
+	// PreparedArchive 是已下载的归档，安装时仍会依据官方发布元数据重新校验。
+	PreparedArchive string
 }
 
 // Manager performs verified downloads and transactional service installations.
@@ -169,12 +172,18 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 	if progress != nil {
 		progress("download", 0, asset.Size)
 	}
-	if err := m.Releases.Download(ctx, options.Source, asset, archivePath, func(done, total int64) {
-		if progress != nil {
-			progress("download", done, total)
+	if options.PreparedArchive != "" {
+		if err := copyPreparedArchive(options.PreparedArchive, archivePath, asset); err != nil {
+			return state.Record{}, err
 		}
-	}); err != nil {
-		return state.Record{}, err
+	} else {
+		if err := m.Releases.Download(ctx, options.Source, asset, archivePath, func(done, total int64) {
+			if progress != nil {
+				progress("download", done, total)
+			}
+		}); err != nil {
+			return state.Record{}, err
+		}
 	}
 	stage := filepath.Join(workspace, "stage")
 	archiveRoot := strings.TrimSuffix(assetName, target.Extension)
@@ -345,6 +354,37 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 		progress("complete", asset.Size, asset.Size)
 	}
 	return current, nil
+}
+
+// copyPreparedArchive rechecks a TUI-fetched package against the current official asset digest before extraction.
+// copyPreparedArchive 在解压前依据当前官方资产摘要重新校验 TUI 预取的发布包。
+func copyPreparedArchive(sourcePath, destination string, asset release.Asset) error {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() != asset.Size {
+		return errors.New("prepared archive is not a regular file with the published size")
+	}
+	target, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer target.Close()
+	hasher := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(target, hasher), source)
+	if copyErr != nil {
+		return copyErr
+	}
+	if written != asset.Size || hex.EncodeToString(hasher.Sum(nil)) != asset.SHA256 {
+		return errors.New("prepared archive failed official size or SHA-256 verification")
+	}
+	if err := target.Sync(); err != nil {
+		return err
+	}
+	return target.Close()
 }
 
 // verifyManifest confirms the extracted package identifies the selected app Release and binary.

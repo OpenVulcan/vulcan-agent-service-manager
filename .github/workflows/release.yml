@@ -160,12 +160,15 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          "dist-bin/$BINARY" install --yes --app-version v0.1.0 --runtime-root "$VASM_APP_ROOT" --vmm false
+          prepared_json="$("dist-bin/$BINARY" --internal-prepare-install --app-version v0.1.0)"
+          prepared_archive="$(python -c 'import json,sys; print(json.loads(sys.argv[1])["archive_path"])' "$prepared_json")"
+          "dist-bin/$BINARY" install --yes --app-version v0.1.0 --prepared-archive "$prepared_archive" --runtime-root "$VASM_APP_ROOT" --vmm false
           "dist-bin/$BINARY" status --json
           "dist-bin/$BINARY" config show
           "dist-bin/$BINARY" skills list --layer ROOT
           "dist-bin/$BINARY" uninstall
           test -f "$VASM_APP_ROOT/configs/config.yaml"
+          python -c 'import os,sys; p=sys.argv[1]; os.unlink(p); os.rmdir(os.path.dirname(p))' "$prepared_archive"
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.platform }}

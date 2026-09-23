@@ -71,6 +71,8 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return nil
 	case "install":
 		return installCommand(ctx, client, stateFile, args[1:], output)
+	case "--internal-prepare-install":
+		return prepareInstallCommand(ctx, client, args[1:], output)
 	case "adopt":
 		flags := flag.NewFlagSet("adopt", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
@@ -134,7 +136,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(output, "service updated to", updated.AppTag)
+		fmt.Fprintf(output, "service updated to %s from %s\n", updated.AppTag, sourceLabel(options.Source))
 		return nil
 	case "check-updates":
 		return checkUpdates(ctx, client, stateFile, output)
@@ -174,7 +176,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 				}
 			}
 		}
-		fmt.Fprintln(output, "manager release:", updated)
+		fmt.Fprintf(output, "manager release: %s from %s\n", updated, sourceLabel(source))
 		return nil
 	case "status":
 		if len(args) > 2 || (len(args) == 2 && args[1] != "--json") {
@@ -236,6 +238,15 @@ func selectedSource(kind, base string) (release.Source, error) {
 	return source, release.ValidateSource(source)
 }
 
+// sourceLabel describes the selected transfer endpoint in installation and update results.
+// sourceLabel 在安装及更新结果中说明用户选择的传输端点。
+func sourceLabel(source release.Source) string {
+	if source.Kind == "mirror" {
+		return source.MirrorBase
+	}
+	return "GitHub"
+}
+
 // installCommand parses explicit install choices and commits the selected application Release.
 // installCommand 解析明确的安装选项并提交所选应用发布版本。
 func installCommand(ctx context.Context, client *release.Client, stateFile string, args []string, output io.Writer) error {
@@ -261,6 +272,7 @@ func installCommand(ctx context.Context, client *release.Client, stateFile strin
 	startup := flags.String("startup", "manual", "auto or manual")
 	start := flags.Bool("start", false, "start service after registration")
 	addPath := flags.Bool("add-path", false, "add the manager command directory to user PATH")
+	preparedArchive := flags.String("prepared-archive", "", "already downloaded archive verified against the selected Release")
 	vmm := flags.String("vmm", "unchanged", "true, false, or unchanged")
 	vmmURL := flags.String("vmm-url", "", "VMM endpoint")
 	if err := flags.Parse(args); err != nil {
@@ -287,7 +299,7 @@ func installCommand(ctx context.Context, client *release.Client, stateFile strin
 	if err != nil {
 		return err
 	}
-	options := installation.Options{StateFile: stateFile, RuntimeRoot: absRoot, Tag: *tag, Source: source, InitializeSkills: *initSkills, VMMEndpoint: *vmmURL, InstallService: *installService, ServiceScope: *scope, Startup: *startup, StartService: *start}
+	options := installation.Options{StateFile: stateFile, RuntimeRoot: absRoot, Tag: *tag, Source: source, InitializeSkills: *initSkills, VMMEndpoint: *vmmURL, InstallService: *installService, ServiceScope: *scope, Startup: *startup, StartService: *start, PreparedArchive: *preparedArchive}
 	if *skillSelection == "none" {
 		options.SkillNames = []string{}
 	} else if *skillSelection != "default" {
@@ -311,12 +323,64 @@ func installCommand(ctx context.Context, client *release.Client, stateFile strin
 	if err := state.SavePreferences(stateFile, preferences); err != nil {
 		return fmt.Errorf("service installed but manager preferences could not be saved: %w", err)
 	}
-	fmt.Fprintf(output, "installed %s at %s\n", record.AppTag, record.RuntimeRoot)
+	fmt.Fprintf(output, "installed %s at %s from %s\n", record.AppTag, record.RuntimeRoot, sourceLabel(source))
 	if *addPath {
 		if err := pathCommand(stateFile, []string{"add"}, output); err != nil {
 			return fmt.Errorf("service installed, but PATH setup failed: %w", err)
 		}
 	}
+	return nil
+}
+
+// prepareInstallCommand fetches and verifies a service archive before the TUI asks for installation settings.
+// prepareInstallCommand 在 TUI 询问安装配置之前下载并校验主程序归档。
+func prepareInstallCommand(ctx context.Context, client *release.Client, args []string, output io.Writer) error {
+	flags := flag.NewFlagSet("prepare-install", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	sourceName := flags.String("source", "github", "github or mirror")
+	mirrorBase := flags.String("mirror-base", "", "HTTPS mirror proxy base")
+	tag := flags.String("app-version", "", "service Release tag")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("unexpected prepare-install arguments")
+	}
+	source, err := selectedSource(*sourceName, *mirrorBase)
+	if err != nil {
+		return err
+	}
+	info, err := client.Fetch(ctx, release.ServiceRepository, *tag)
+	if err != nil {
+		return err
+	}
+	target, err := platform.Current()
+	if err != nil {
+		return err
+	}
+	asset, err := info.FindAsset(platform.AppAssetName(info.Tag, target))
+	if err != nil {
+		return err
+	}
+	workspace, err := os.MkdirTemp("", ".vasm-prepared-*")
+	if err != nil {
+		return err
+	}
+	archivePath := filepath.Join(workspace, asset.Name)
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(archivePath)
+			_ = os.Remove(workspace)
+		}
+	}()
+	if err := client.Download(ctx, source, asset, archivePath, nil); err != nil {
+		return err
+	}
+	if err := writeJSON(output, map[string]any{"tag": info.Tag, "archive_path": archivePath, "asset_name": asset.Name, "asset_size": asset.Size, "source": source.Kind}); err != nil {
+		return err
+	}
+	keep = true
 	return nil
 }
 
