@@ -1,0 +1,190 @@
+# Publish manager versions only after a person selects an existing tag in workflow_dispatch.
+# 仅在人工选择已有标签并手动执行工作流后发布管理器版本。
+name: Release vasm manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing manager tag, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vasm-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact existing tag and source version
+        id: validate
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          version="${RELEASE_TAG#v}"
+          test "$(go run ./cmd/vasm --version)" = "vasm $version"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Test release packaging and Unix bootstrap syntax
+        shell: bash
+        run: |
+          python -m unittest discover -s scripts/tests -p 'test_release.py' -v
+          sh -n scripts/install.sh
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-2022
+            goos: windows
+            goarch: amd64
+            binary: vasm.exe
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            binary: vasm
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            binary: vasm
+          - platform: macos-x64
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            binary: vasm
+          - platform: macos-arm64
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+            binary: vasm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test and build natively
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGET_GOARCH: ${{ matrix.goarch }}
+          BINARY: ${{ matrix.binary }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(go env GOOS)" = "$TARGET_GOOS"
+          test "$(go env GOARCH)" = "$TARGET_GOARCH"
+          go vet ./...
+          go test ./...
+          mkdir -p dist-bin dist
+          go build -trimpath -ldflags="-s -w -X github.com/OpenVulcan/vulcan-agent-service-manager/internal/selfupdate.Version=$VERSION" -o "dist-bin/$BINARY" ./cmd/vasm
+          test "$("dist-bin/$BINARY" --version)" = "vasm $VERSION"
+      - name: Package this native manager
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          BINARY: ${{ matrix.binary }}
+        run: python scripts/release.py package --platform "$PLATFORM" --binary "dist-bin/$BINARY" --output dist
+      - name: Verify Windows bootstrap syntax
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) { throw ($errors | Out-String) }
+      - name: Smoke the extracted native archive
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python scripts/smoke.py --directory dist --platform "$PLATFORM" --version "$VERSION"
+      - name: Install and manage the published service natively
+        shell: bash
+        env:
+          BINARY: ${{ matrix.binary }}
+          VASM_APP_ROOT: ${{ runner.temp }}/vasm-app
+        run: |
+          set -euo pipefail
+          "dist-bin/$BINARY" install --yes --app-version v0.1.0 --runtime-root "$VASM_APP_ROOT" --vmm false
+          "dist-bin/$BINARY" status --json
+          "dist-bin/$BINARY" config show
+          "dist-bin/$BINARY" skills list --layer ROOT
+          "dist-bin/$BINARY" uninstall
+          test -f "$VASM_APP_ROOT/configs/config.yaml"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify the complete five-platform asset set
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: python scripts/release.py verify --directory dist --tag "$RELEASE_TAG"
+      - name: Publish only after verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "vasm $RELEASE_TAG" --notes "Independent Vulcan Agent Service Manager release."
+          fi
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
