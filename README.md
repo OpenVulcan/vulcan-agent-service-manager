@@ -20,6 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/OpenVulcan/vulcan-agent-service-man
 
 脚本将管理器安装至 Windows `%LOCALAPPDATA%\OpenVulcan\vasm\bin\vasm.exe` 或 Unix `~/.local/bin/vasm`，然后打开 TUI。管道执行时，TUI 会连接实际控制终端；没有交互终端则明确报错，可改用 `vasm install --yes`。首次安装向导先选择下载源和版本并校验完整主程序包，再询问 VMM、技能、服务模式、安装目录和 PATH 设置；提交时再次对照官方摘要校验暂存包。管理菜单可接管已有前台安装或本机服务，并分别管理 ROOT 和 USER 技能。加入用户 PATH 由向导选项或 `vasm path add` 负责，新终端才会读取更新后的 PATH。脚本可通过 `VASM_VERSION=v0.1.0` 或 Unix `--version v0.1.0` 固定管理器版本。
 
+正式发布仅保留 `v0.1.0`。若本机安装过版本号更高的过程版，请先关闭旧管理器，再重新运行一键安装脚本；`update-self` 会按版本顺序拒绝降级。
+
 ## 管理命令
 
 直接运行 `vasm` 打开安装向导和管理菜单。等价命令行入口包括：
