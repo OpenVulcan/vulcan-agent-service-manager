@@ -30,13 +30,24 @@ func Uninstall(ctx context.Context, stateFile string, purge bool) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyManifest(record.RuntimeRoot, record.AppTag, target.Name, platform.AppAssetName(record.AppTag, target)); err != nil {
-		return fmt.Errorf("refusing to uninstall unverified managed root: %w", err)
-	}
-	if purge {
-		if err := validatePurgeRoot(record.RuntimeRoot); err != nil {
+	if !record.Uninstalling {
+		if err := verifyManifest(record.RuntimeRoot, record.AppTag, target.Name, platform.AppAssetName(record.AppTag, target)); err != nil {
+			return fmt.Errorf("refusing to uninstall unverified managed root: %w", err)
+		}
+		if purge {
+			if err := validatePurgeRoot(record.RuntimeRoot); err != nil {
+				return err
+			}
+		}
+		// Persist the verified intent before deleting any package file so a partial removal can resume.
+		// 删除任何发布文件前先持久化已校验的卸载意图，以便局部失败后继续。
+		record.Uninstalling = true
+		record.UninstallPurge = purge
+		if err := state.Save(stateFile, record); err != nil {
 			return err
 		}
+	} else if record.UninstallPurge != purge {
+		return errors.New("retry uninstall with the same purge choice as the previous attempt")
 	}
 	if record.ServiceInstalled {
 		if _, err := service.Lifecycle(ctx, record, "uninstall"); err != nil {
@@ -48,8 +59,14 @@ func Uninstall(ctx context.Context, stateFile string, purge bool) error {
 		}
 	}
 	if purge {
-		if err := os.RemoveAll(record.RuntimeRoot); err != nil {
-			return err
+		if err := validatePurgeRoot(record.RuntimeRoot); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		} else {
+			if err := os.RemoveAll(record.RuntimeRoot); err != nil {
+				return err
+			}
 		}
 	} else {
 		if err := removePackagedFiles(record.RuntimeRoot); err != nil {
@@ -84,6 +101,11 @@ func validatePurgeRoot(root string) error {
 // removePackagedFiles 仅删除已知属于当前发布布局的路径。
 func removePackagedFiles(root string) error {
 	contents, err := os.ReadFile(filepath.Join(root, "release-manifest.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		// The manifest is removed last, so its absence means a prior attempt finished file removal.
+		// 清单最后删除，因此缺失表示上次尝试已完成文件清理。
+		return nil
+	}
 	if err != nil {
 		return err
 	}

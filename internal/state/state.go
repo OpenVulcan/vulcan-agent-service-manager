@@ -45,6 +45,12 @@ type Record struct {
 	// Managed records whether the instance was installed or explicitly adopted by vasm.
 	// Managed 记录此实例是否由 vasm 安装或显式接管。
 	Managed bool `json:"managed"`
+	// Uninstalling marks a previously verified removal that may need an idempotent retry.
+	// Uninstalling 标记已完成身份校验、可能需要幂等重试的卸载过程。
+	Uninstalling bool `json:"uninstalling,omitempty"`
+	// UninstallPurge preserves the approved data-deletion choice across retries.
+	// UninstallPurge 在重试之间保留用户已确认的数据删除选择。
+	UninstallPurge bool `json:"uninstall_purge,omitempty"`
 }
 
 // DefaultFile returns the per-user state file path using platform conventions.

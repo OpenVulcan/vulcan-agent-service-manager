@@ -238,3 +238,37 @@ func TestManifestRejectsWrongIdentity(t *testing.T) {
 		t.Fatal("wrong product identity accepted")
 	}
 }
+
+// TestUninstallResumesAfterPartialRemoval checks that a verified interrupted uninstall can finish.
+// TestUninstallResumesAfterPartialRemoval 检查已校验但中断的卸载能够继续完成。
+func TestUninstallResumesAfterPartialRemoval(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "service")
+	controller := filepath.Join(root, "lua_runtime", "bin", "vldb-controller")
+	if err := os.MkdirAll(filepath.Dir(controller), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(controller, []byte("packaged controller"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"contents":{"binary":"bin/vulcan-agent-service"}}`)
+	if err := os.WriteFile(filepath.Join(root, "release-manifest.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	record := state.Record{SchemaVersion: 1, RuntimeRoot: root, AppTag: "v0.1.0", Managed: true, Uninstalling: true}
+	if err := state.Save(stateFile, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := Uninstall(context.Background(), stateFile, true); err == nil {
+		t.Fatal("retry accepted a different purge choice")
+	}
+	if err := Uninstall(context.Background(), stateFile, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(controller); !os.IsNotExist(err) {
+		t.Fatalf("packaged controller remained after retry: %v", err)
+	}
+	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+		t.Fatalf("manager state remained after retry: %v", err)
+	}
+}

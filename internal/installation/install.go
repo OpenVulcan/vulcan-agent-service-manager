@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/OpenVulcan/vulcan-agent-service-manager/internal/appconfig"
 	"github.com/OpenVulcan/vulcan-agent-service-manager/internal/archive"
@@ -75,7 +76,7 @@ type Manager struct {
 
 // Install downloads, verifies, stages, and commits one service Release with rollback.
 // Install 下载、校验、暂存并提交一个服务发布版本，失败时执行回滚。
-func (m *Manager) Install(ctx context.Context, options Options, progress func(string, int64, int64)) (state.Record, error) {
+func (m *Manager) Install(ctx context.Context, options Options, progress func(string, int64, int64)) (result state.Record, resultErr error) {
 	if !filepath.IsAbs(options.RuntimeRoot) || options.StateFile == "" {
 		return state.Record{}, errors.New("absolute runtime root and state file are required")
 	}
@@ -129,8 +130,8 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 			return state.Record{}, errors.New("selected Release is older than the installed version")
 		}
 		if comparison == 0 {
-			if _, err := os.Stat(service.Executable(previous.RuntimeRoot)); err != nil {
-				return state.Record{}, fmt.Errorf("installed version matches latest but its binary is missing: %w", err)
+			if err := verifyManifest(previous.RuntimeRoot, previous.AppTag, target.Name, platform.AppAssetName(previous.AppTag, target)); err != nil {
+				return state.Record{}, fmt.Errorf("installed version matches latest but package verification failed: %w", err)
 			}
 			if progress != nil {
 				progress("up-to-date", 0, 0)
@@ -152,7 +153,12 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 	if err != nil {
 		return state.Record{}, err
 	}
-	defer os.RemoveAll(workspace)
+	keepWorkspace := false
+	defer func() {
+		if !keepWorkspace {
+			_ = os.RemoveAll(workspace)
+		}
+	}()
 	archivePath := filepath.Join(workspace, asset.Name)
 	if progress != nil {
 		progress("download", 0, asset.Size)
@@ -235,44 +241,63 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 			return state.Record{}, err
 		}
 	}
-	serviceStopped := wasRunning
 	backup := filepath.Join(workspace, "backup")
-	if hasPrevious {
-		if err := os.Rename(options.RuntimeRoot, backup); err != nil {
-			if serviceStopped {
-				_, _ = service.Lifecycle(context.Background(), previous, "start")
-			}
-			return state.Record{}, err
-		}
-	}
-	if err := os.Rename(stage, options.RuntimeRoot); err != nil {
-		if hasPrevious {
-			_ = os.Rename(backup, options.RuntimeRoot)
-			if serviceStopped {
-				_, _ = service.Lifecycle(context.Background(), previous, "start")
-			}
-		}
-		return state.Record{}, err
-	}
-	// Keep the old tree intact until service initialization and state commit both succeed.
-	// 在服务初始化与状态提交均成功前完整保留旧安装目录。
+	oldBackedUp := false
+	newRootPlaced := false
 	committed := false
 	newServiceRegistered := false
+	attemptedNewStart := false
+	// Register recovery before swapping directories so every later failure restores the old tree.
+	// 交换目录前注册恢复逻辑，确保之后的任何失败都尝试恢复旧目录。
 	defer func() {
 		if committed {
 			return
 		}
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var recoveryErrors []error
 		if newServiceRegistered {
-			_, _ = service.Lifecycle(context.Background(), current, "uninstall")
-		}
-		_ = os.RemoveAll(options.RuntimeRoot)
-		if hasPrevious {
-			_ = os.Rename(backup, options.RuntimeRoot)
-			if wasRunning {
-				_, _ = service.Lifecycle(context.Background(), previous, "start")
+			if _, err := service.Lifecycle(recoveryCtx, current, "uninstall"); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("remove newly registered service: %w", err))
+			}
+		} else if attemptedNewStart {
+			if _, err := service.Lifecycle(recoveryCtx, current, "stop"); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("stop upgraded service: %w", err))
 			}
 		}
+		if newRootPlaced {
+			if err := os.RemoveAll(options.RuntimeRoot); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("remove failed release: %w", err))
+			}
+		}
+		oldRestored := !oldBackedUp
+		if oldBackedUp {
+			if err := os.Rename(backup, options.RuntimeRoot); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("restore previous release: %w", err))
+			} else {
+				oldRestored = true
+			}
+		}
+		if wasRunning && oldRestored {
+			if _, err := service.Lifecycle(recoveryCtx, previous, "start"); err != nil {
+				recoveryErrors = append(recoveryErrors, fmt.Errorf("restart previous service: %w", err))
+			}
+		}
+		if len(recoveryErrors) > 0 {
+			keepWorkspace = true
+			resultErr = errors.Join(resultErr, fmt.Errorf("installation rollback incomplete; backup at %s: %w", workspace, errors.Join(recoveryErrors...)))
+		}
 	}()
+	if hasPrevious {
+		if err := os.Rename(options.RuntimeRoot, backup); err != nil {
+			return state.Record{}, err
+		}
+		oldBackedUp = true
+	}
+	if err := os.Rename(stage, options.RuntimeRoot); err != nil {
+		return state.Record{}, err
+	}
+	newRootPlaced = true
 	if options.InitializeSkills {
 		if progress != nil {
 			progress("initialize-skills", 0, 0)
@@ -295,6 +320,7 @@ func (m *Manager) Install(ctx context.Context, options Options, progress func(st
 			}
 		}
 	} else if wasRunning {
+		attemptedNewStart = true
 		if _, err := service.Lifecycle(ctx, current, "start"); err != nil {
 			return state.Record{}, err
 		}

@@ -16,7 +16,7 @@ func TestExtractRejectsTraversalAndDuplicates(t *testing.T) {
 	for name, entries := range map[string][]string{
 		"parent":    {"vasm-windows-x64/../outside.txt"},
 		"absolute":  {"/vasm-windows-x64/inside.txt"},
-		"duplicate": {"vasm-windows-x64/vasm.exe", "vasm-windows-x64/VASM.EXE"},
+		"duplicate": {"vasm-windows-x64/vasm.exe", "vasm-windows-x64/vasm.exe"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			archivePath := filepath.Join(t.TempDir(), "unsafe.zip")
@@ -50,12 +50,34 @@ func TestExtractRejectsTraversalAndDuplicates(t *testing.T) {
 // TestTrackerRejectsCumulativeOverflow ensures archive size accounting cannot wrap around.
 // TestTrackerRejectsCumulativeOverflow 确保归档累计大小计数不能溢出绕回。
 func TestTrackerRejectsCumulativeOverflow(t *testing.T) {
-	tracker := newTracker()
+	tracker := newTracker(false)
 	if _, err := tracker.target("root/first", t.TempDir(), "root", MaxExpandedBytes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tracker.target("root/second", t.TempDir(), "root", 1); err == nil {
 		t.Fatal("archive exceeded the expanded byte limit")
+	}
+}
+
+// TestTrackerUsesDestinationCaseSemantics accepts distinct Unix names while protecting folded filesystems.
+// TestTrackerUsesDestinationCaseSemantics 接受 Unix 的不同大小写名称，同时保护不区分大小写的文件系统。
+func TestTrackerUsesDestinationCaseSemantics(t *testing.T) {
+	for _, testCase := range []struct {
+		// caseFold selects the destination lookup behavior.
+		// caseFold 选择目标文件系统的查找行为。
+		caseFold bool
+		// accepted states whether the second name may coexist.
+		// accepted 表示第二个名称能否共存。
+		accepted bool
+	}{{caseFold: false, accepted: true}, {caseFold: true, accepted: false}} {
+		tracker := newTracker(testCase.caseFold)
+		if _, err := tracker.target("app/2621A", t.TempDir(), "app", 1); err != nil {
+			t.Fatal(err)
+		}
+		_, err := tracker.target("app/2621a", t.TempDir(), "app", 1)
+		if (err == nil) != testCase.accepted {
+			t.Fatalf("caseFold=%t, second path error=%v", testCase.caseFold, err)
+		}
 	}
 }
 

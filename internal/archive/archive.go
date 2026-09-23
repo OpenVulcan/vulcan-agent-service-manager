@@ -52,15 +52,18 @@ type tracker struct {
 	// bytes is the total number of expanded file bytes.
 	// bytes 是已展开文件的总字节数。
 	bytes int64
-	// seen rejects duplicate or case-folded paths on every target.
-	// seen 在所有目标平台上拒绝重复或大小写折叠后冲突的路径。
+	// seen rejects paths that collide on the destination filesystem.
+	// seen 拒绝在目标文件系统上发生冲突的路径。
 	seen map[string]bool
+	// caseFold selects case-insensitive path keys when the destination filesystem requires them.
+	// caseFold 在目标文件系统不区分大小写时启用折叠路径键。
+	caseFold bool
 }
 
 // newTracker creates the bounded extraction accounting state.
 // newTracker 创建有界解压计数状态。
-func newTracker() *tracker {
-	return &tracker{seen: make(map[string]bool)}
+func newTracker(caseFold bool) *tracker {
+	return &tracker{seen: make(map[string]bool), caseFold: caseFold}
 }
 
 // target validates one archive member and returns its destination beneath the extraction root.
@@ -74,7 +77,10 @@ func (t *tracker) target(name, destination, root string, size int64) (string, er
 	if clean != trimmed || (clean != root && !strings.HasPrefix(clean, root+"/")) {
 		return "", fmt.Errorf("archive path leaves expected root: %q", name)
 	}
-	key := strings.ToLower(clean)
+	key := clean
+	if t.caseFold {
+		key = strings.ToLower(clean)
+	}
 	if t.seen[key] {
 		return "", fmt.Errorf("duplicate archive path %q", name)
 	}
@@ -91,6 +97,35 @@ func (t *tracker) target(name, destination, root string, size int64) (string, er
 		return destination, nil
 	}
 	return filepath.Join(destination, filepath.FromSlash(strings.TrimPrefix(clean, root+"/"))), nil
+}
+
+// filesystemCaseFold probes the new extraction directory for case-insensitive name lookup.
+// filesystemCaseFold 探测新解压目录是否采用大小写不敏感的文件名查找。
+func filesystemCaseFold(destination string) (bool, error) {
+	probe, err := os.CreateTemp(destination, ".vasm-case-*")
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(probe.Name())
+	if err := probe.Close(); err != nil {
+		return false, err
+	}
+	upper := filepath.Join(destination, strings.ToUpper(filepath.Base(probe.Name())))
+	upperInfo, err := os.Stat(upper)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	probeInfo, err := os.Stat(probe.Name())
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(probeInfo, upperInfo) {
+		return false, errors.New("case-sensitivity probe collided with another file")
+	}
+	return true, nil
 }
 
 // writeFile copies exactly size bytes into a newly created regular file.
@@ -119,7 +154,11 @@ func extractZip(archivePath, destination, root string) error {
 		return err
 	}
 	defer input.Close()
-	track := newTracker()
+	caseFold, err := filesystemCaseFold(destination)
+	if err != nil {
+		return err
+	}
+	track := newTracker(caseFold)
 	for _, entry := range input.File {
 		info := entry.FileInfo()
 		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
@@ -180,7 +219,11 @@ func extractTarGzip(archivePath, destination, root string) error {
 	}
 	defer decompressor.Close()
 	reader := tar.NewReader(decompressor)
-	track := newTracker()
+	caseFold, err := filesystemCaseFold(destination)
+	if err != nil {
+		return err
+	}
+	track := newTracker(caseFold)
 	var links []tarLink
 	for {
 		header, err := reader.Next()
