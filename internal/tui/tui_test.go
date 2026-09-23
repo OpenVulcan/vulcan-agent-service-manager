@@ -58,11 +58,26 @@ func TestWizardRoutesChoicesToInstall(t *testing.T) {
 // TestHomeRoutesPathManagement verifies the manager PATH page remains reachable after menu edits.
 // TestHomeRoutesPathManagement 验证菜单调整后仍可进入管理器 PATH 页面。
 func TestHomeRoutesPathManagement(t *testing.T) {
-	initial := model{page: "home", cursor: 7}
+	initial := model{page: "home", cursor: 9}
 	updated, _ := initial.selectMenu()
 	selected := updated.(model)
 	if selected.page != "path" || selected.cursor != 0 {
 		t.Fatalf("home route went to %s at %d", selected.page, selected.cursor)
+	}
+}
+
+// TestMenusExposeRootInstallAndNativeAdoption keeps explicit skill and existing-service actions reachable.
+// TestMenusExposeRootInstallAndNativeAdoption 确保系统技能安装及既有服务接管入口可达。
+func TestMenusExposeRootInstallAndNativeAdoption(t *testing.T) {
+	rootSkill, _ := (model{page: "skills", cursor: 1}).selectMenu()
+	selectedSkill := rootSkill.(model)
+	if selectedSkill.page != "input" || !reflect.DeepEqual(selectedSkill.inputCommand, []string{"__root_install"}) {
+		t.Fatalf("ROOT installation menu did not open its input: %+v", selectedSkill)
+	}
+	serviceAdopt, _ := (model{page: "home", cursor: 4}).selectMenu()
+	selectedAdopt := serviceAdopt.(model)
+	if selectedAdopt.page != "input" || !reflect.DeepEqual(selectedAdopt.inputCommand, []string{"__adopt", "system"}) {
+		t.Fatalf("system service adoption menu did not open its input: %+v", selectedAdopt)
 	}
 }
 

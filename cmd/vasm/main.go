@@ -693,6 +693,9 @@ func sourceCommand(stateFile string, args []string, output io.Writer) error {
 // doctorCommand checks local layout and the public service Release endpoint.
 // doctorCommand 检查本地布局及公开的服务发布端点。
 func doctorCommand(ctx context.Context, client *release.Client, stateFile string, args []string, output io.Writer) error {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "--json") {
+		return errors.New("doctor accepts only --json")
+	}
 	result := map[string]any{"manager_version": selfupdate.Version, "checked_at": time.Now().UTC().Format(time.RFC3339)}
 	target, err := platform.Current()
 	if err != nil {
@@ -701,12 +704,13 @@ func doctorCommand(ctx context.Context, client *release.Client, stateFile string
 		result["platform"] = target.Name
 	}
 	if record, err := state.Load(stateFile); err == nil {
-		result["service_installed"] = true
+		result["app_installed"] = true
+		result["native_service_installed"] = record.ServiceInstalled
 		result["runtime_root"] = record.RuntimeRoot
 		result["service_binary_exists"] = fileExists(service.Executable(record.RuntimeRoot))
 		result["app_tag"] = record.AppTag
 	} else if errors.Is(err, os.ErrNotExist) {
-		result["service_installed"] = false
+		result["app_installed"] = false
 	} else {
 		result["state_error"] = err.Error()
 	}

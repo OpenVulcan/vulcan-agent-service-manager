@@ -406,7 +406,7 @@ func menuFor(page string) []string {
 	case "service":
 		return []string{"查看服务状态", "启动服务", "停止服务", "重启服务", "安装为服务", "设置开机自启", "设置手动启动", "卸载服务", "返回首页"}
 	case "skills":
-		return []string{"查看 ROOT 系统技能", "更新全部 ROOT 技能", "查看 USER 技能", "安装 USER 技能", "更新 USER 技能", "卸载 USER 技能", "返回首页"}
+		return []string{"查看 ROOT 系统技能", "安装 ROOT 系统技能", "更新全部 ROOT 技能", "查看 USER 技能", "安装 USER 技能", "更新 USER 技能", "卸载 USER 技能", "返回首页"}
 	case "config":
 		return []string{"查看当前配置", "启用 VMM", "禁用 VMM", "设置 VMM 地址", "设置默认工具结果字节上限", "按请求头值设置工具结果字节上限", "启用自动安装系统技能", "禁用自动安装系统技能", "启用指定系统技能", "禁用指定系统技能", "返回首页"}
 	case "source":
@@ -414,7 +414,11 @@ func menuFor(page string) []string {
 	case "path":
 		return []string{"查看管理器命令目录", "加入用户 PATH", "从用户 PATH 移除", "返回首页"}
 	default:
-		return []string{"首次安装主程序", "更新主程序", "接管已有安装", "服务管理", "技能管理", "配置与预算", "下载源", "PATH 管理", "检查两个程序的最新版本", "更新 vasm 自身", "诊断", "卸载主程序并保留数据", "退出"}
+		userAdopt := "接管已有用户服务"
+		if runtime.GOOS == "windows" {
+			userAdopt += "（Windows 不支持）"
+		}
+		return []string{"首次安装主程序", "更新主程序", "接管已有前台安装", userAdopt, "接管已有系统服务", "服务管理", "技能管理", "配置与预算", "下载源", "PATH 管理", "检查两个程序的最新版本", "更新 vasm 自身", "诊断", "卸载主程序并保留数据", "退出"}
 	}
 }
 
@@ -447,17 +451,22 @@ func (m model) selectMenu() (tea.Model, tea.Cmd) {
 			m.page, m.cursor = "wizard", 0
 		case 1:
 			return m.execute([]string{"update"})
-		case 2:
-			m.beginInput("已有完整发布包的运行根目录", []string{"__adopt"}, "")
-		case 3, 4, 5, 6, 7:
-			m.page, m.cursor = []string{"service", "skills", "config", "source", "path"}[m.cursor-3], 0
-		case 8:
-			return m.execute([]string{"check-updates"})
-		case 9:
-			return m.execute([]string{"update-self"})
+		case 2, 3, 4:
+			if m.cursor == 3 && runtime.GOOS == "windows" {
+				m.page, m.result, m.errorText = "result", "", "Windows 不支持用户作用域的本机服务"
+				m.resultOffset = 0
+				return m, nil
+			}
+			m.beginInput("已有完整发布包的运行根目录", []string{"__adopt", []string{"foreground", "user", "system"}[m.cursor-2]}, "")
+		case 5, 6, 7, 8, 9:
+			m.page, m.cursor = []string{"service", "skills", "config", "source", "path"}[m.cursor-5], 0
 		case 10:
-			return m.execute([]string{"doctor", "--json"})
+			return m.execute([]string{"check-updates"})
 		case 11:
+			return m.execute([]string{"update-self"})
+		case 12:
+			return m.execute([]string{"doctor", "--json"})
+		case 13:
 			m.page = "confirm"
 			m.pendingCommand = []string{"uninstall"}
 			m.pendingLabel = "将卸载主程序，保留配置、技能、状态和日志。"
@@ -477,13 +486,15 @@ func (m model) selectMenu() (tea.Model, tea.Cmd) {
 		case 0:
 			return m.execute([]string{"skills", "list", "--layer", "ROOT"})
 		case 1:
-			return m.execute([]string{"skills", "update", "--layer", "ROOT"})
+			m.beginInput("ROOT 系统技能 GitHub 地址", []string{"__root_install"}, "")
 		case 2:
+			return m.execute([]string{"skills", "update", "--layer", "ROOT"})
+		case 3:
 			return m.execute([]string{"skills", "list", "--layer", "USER"})
-		case 3, 4, 5:
-			action := []string{"install", "update", "uninstall"}[m.cursor-3]
+		case 4, 5, 6:
+			action := []string{"install", "update", "uninstall"}[m.cursor-4]
 			m.beginInput("USER 技能 GitHub 地址或技能 ID", []string{"skills", action}, "")
-		case 6:
+		case 7:
 			m.page, m.cursor = "home", 0
 		}
 	case "config":
@@ -728,7 +739,14 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.inputCommand[0] == "__adopt" {
-				return m.execute([]string{"adopt", "--runtime-root", m.inputText})
+				command := []string{"adopt", "--runtime-root", m.inputText}
+				if m.inputCommand[1] != "foreground" {
+					command = append(command, "--service-installed", "--scope", m.inputCommand[1])
+				}
+				return m.execute(command)
+			}
+			if m.inputCommand[0] == "__root_install" {
+				return m.execute([]string{"skills", "install", m.inputText, "--layer", "ROOT"})
 			}
 			if m.inputCommand[0] == "__budget_pattern" {
 				m.beginInput("该客户端的工具结果字节上限", []string{"config", "budget", m.inputText}, "20000")
