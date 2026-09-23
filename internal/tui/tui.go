@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
 )
 
 // Runner executes one equivalent CLI command and returns its output.
@@ -165,7 +167,7 @@ func (writer *eventWriter) Write(content []byte) (int, error) {
 }
 
 // Run opens the manager terminal interface until the user exits.
-// Run 打开管理器终端界面，直到用户退出。
+// Run 打开管理器终端界面，直到用户退出；管道执行时改用真实控制台。
 func Run(parent context.Context, runner Runner) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -199,13 +201,57 @@ func Run(parent context.Context, runner Runner) error {
 			initial.mirror = custom
 		}
 	}
-	program := tea.NewProgram(initial)
+	input, output, closeTerminal, err := terminalIO()
+	if err != nil {
+		return err
+	}
+	defer closeTerminal()
+	program := tea.NewProgram(initial, tea.WithInput(input), tea.WithOutput(output))
 	final, err := program.Run()
 	cancel()
 	if last, ok := final.(model); ok {
 		cleanupPreparedArchive(last.preparedArchive)
 	}
 	return err
+}
+
+// terminalIO attaches a piped bootstrap to the controlling terminal or explains why the TUI cannot start.
+// terminalIO 将管道引导流程接到控制终端；若没有控制终端则明确说明 TUI 无法启动。
+func terminalIO() (io.Reader, io.Writer, func(), error) {
+	input := os.Stdin
+	output := os.Stdout
+	opened := make([]*os.File, 0, 2)
+	closeOpened := func() {
+		for _, file := range opened {
+			_ = file.Close()
+		}
+	}
+	inputName, outputName := "/dev/tty", "/dev/tty"
+	if runtime.GOOS == "windows" {
+		inputName, outputName = "CONIN$", "CONOUT$"
+	}
+	if !term.IsTerminal(input.Fd()) {
+		console, err := os.Open(inputName)
+		if err != nil {
+			return nil, nil, closeOpened, errors.New("interactive terminal unavailable; use vasm install --yes for a non-interactive installation")
+		}
+		opened = append(opened, console)
+		input = console
+	}
+	if !term.IsTerminal(output.Fd()) {
+		console, err := os.OpenFile(outputName, os.O_WRONLY, 0)
+		if err != nil {
+			closeOpened()
+			return nil, nil, func() {}, errors.New("interactive terminal output unavailable; use vasm install --yes for a non-interactive installation")
+		}
+		opened = append(opened, console)
+		output = console
+	}
+	if !term.IsTerminal(input.Fd()) || !term.IsTerminal(output.Fd()) {
+		closeOpened()
+		return nil, nil, func() {}, errors.New("interactive terminal is required; use vasm install --yes for a non-interactive installation")
+	}
+	return input, output, closeOpened, nil
 }
 
 // cleanupPreparedArchive removes only a TUI-owned archive and its empty temporary directory.

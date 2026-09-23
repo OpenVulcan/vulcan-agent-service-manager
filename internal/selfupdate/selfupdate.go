@@ -21,7 +21,7 @@ import (
 
 // Version is injected by the independent manager release workflow.
 // Version 由独立的管理器发布工作流注入。
-var Version = "0.1.8"
+var Version = "0.1.9"
 
 // Candidate is the latest manager Release resolved from GitHub metadata.
 // Candidate 是从 GitHub 元数据解析出的最新管理器发布版本。
