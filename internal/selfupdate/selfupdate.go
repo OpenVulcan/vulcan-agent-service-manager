@@ -21,7 +21,7 @@ import (
 
 // Version is injected by the independent manager release workflow.
 // Version 由独立的管理器发布工作流注入。
-var Version = "0.1.0"
+var Version = "0.1.1"
 
 // Candidate is the latest manager Release resolved from GitHub metadata.
 // Candidate 是从 GitHub 元数据解析出的最新管理器发布版本。
@@ -204,12 +204,10 @@ func ApplyWindows(pid int, destination, backup, source, tag string) (resultErr e
 	if err != nil {
 		return err
 	}
-	currentExecutable, err = filepath.EvalSymlinks(currentExecutable)
-	if err != nil {
-		return err
-	}
 	workspace := filepath.Dir(filepath.Dir(source))
-	if !filepath.IsAbs(destination) || !filepath.IsAbs(source) || !filepath.IsAbs(backup) || !strings.HasPrefix(filepath.Base(workspace), ".vasm-update-") || filepath.Clean(currentExecutable) != filepath.Clean(source) || filepath.Clean(filepath.Dir(workspace)) != filepath.Clean(filepath.Dir(destination)) || filepath.Clean(backup) != filepath.Join(workspace, "previous.exe") || filepath.Clean(source) != filepath.Join(workspace, "stage", "vasm.exe") {
+	// Windows can give the same path in 8.3 and long-name forms, so compare filesystem identities.
+	// Windows 可用 8.3 短路径和长路径表示同一位置，因此比较文件系统身份。
+	if !filepath.IsAbs(destination) || !filepath.IsAbs(source) || !filepath.IsAbs(backup) || !strings.HasPrefix(filepath.Base(workspace), ".vasm-update-") || !sameExistingFile(currentExecutable, source) || !sameExistingFile(filepath.Dir(workspace), filepath.Dir(destination)) || filepath.Clean(backup) != filepath.Join(workspace, "previous.exe") || filepath.Clean(source) != filepath.Join(workspace, "stage", "vasm.exe") {
 		return errors.New("self-update helper paths do not match the staged manager")
 	}
 	defer func() {
@@ -249,6 +247,14 @@ func ApplyWindows(pid int, destination, backup, source, tag string) (resultErr e
 	}
 	_ = os.Remove(backup)
 	return nil
+}
+
+// sameExistingFile compares two existing filesystem objects across Windows short and long path spellings.
+// sameExistingFile 比较两个现有文件系统对象，兼容 Windows 短路径和长路径写法。
+func sameExistingFile(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 // LastResult reads the most recent self-update receipt next to a manager executable.

@@ -25,8 +25,8 @@ const MaxEntries = 100000
 // Extract 校验并解压只含一个预期根目录的发布归档。
 // archivePath is the downloaded archive, destination is a new empty directory, and root is the expected top-level name.
 // archivePath 为已下载归档，destination 为新的空目录，root 为预期的顶层目录名。
-// It returns an error before accepting links, traversal, duplicate entries, or oversized content.
-// 遇到链接、路径穿越、重复条目或超大内容时返回错误。
+// It accepts contained TAR symbolic links and rejects traversal, duplicate entries, or oversized content.
+// 允许目标位于包内的 TAR 符号链接，拒绝路径穿越、重复条目和超大内容。
 func Extract(archivePath, destination, root string) error {
 	if root == "" || strings.ContainsAny(root, `/\`) || root == "." || root == ".." {
 		return errors.New("invalid archive root")
@@ -155,8 +155,19 @@ func extractZip(archivePath, destination, root string) error {
 	return nil
 }
 
-// extractTarGzip validates regular files and directories in a gzip compressed TAR archive.
-// extractTarGzip 校验 gzip 压缩 TAR 归档中的普通文件和目录。
+// tarLink records a symbolic link to create after all regular archive entries are written.
+// tarLink 记录在全部普通归档条目写入后创建的符号链接。
+type tarLink struct {
+	// name is the validated destination path inside the extraction directory.
+	// name 是解压目录内经校验的目标路径。
+	name string
+	// target is the original relative link text stored in the archive.
+	// target 是归档中保存的原始相对链接文本。
+	target string
+}
+
+// extractTarGzip validates regular files, directories, and contained relative links in a gzip TAR archive.
+// extractTarGzip 校验 gzip TAR 归档中的普通文件、目录和包内相对链接。
 func extractTarGzip(archivePath, destination, root string) error {
 	input, err := os.Open(archivePath)
 	if err != nil {
@@ -170,24 +181,34 @@ func extractTarGzip(archivePath, destination, root string) error {
 	defer decompressor.Close()
 	reader := tar.NewReader(decompressor)
 	track := newTracker()
+	var links []tarLink
 	for {
 		header, err := reader.Next()
 		if err == io.EOF {
-			return nil
+			return createTarLinks(destination, links)
 		}
 		if err != nil {
 			return err
 		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeDir {
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeSymlink {
 			return fmt.Errorf("unsupported TAR entry %q", header.Name)
 		}
 		size := header.Size
-		if header.Typeflag == tar.TypeDir {
+		if header.Typeflag != tar.TypeReg {
 			size = 0
 		}
 		path, err := track.target(header.Name, destination, root, size)
 		if err != nil {
 			return err
+		}
+		if header.Typeflag == tar.TypeSymlink {
+			// Links are delayed so later file writes never traverse an archive-owned symlink.
+			// 延迟创建链接，避免后续文件写入穿过归档自带的符号链接。
+			if err := validateTarLink(header.Name, header.Linkname, root); err != nil {
+				return err
+			}
+			links = append(links, tarLink{name: path, target: header.Linkname})
+			continue
 		}
 		if header.Typeflag == tar.TypeDir {
 			if err := os.MkdirAll(path, 0o755); err != nil {
@@ -199,4 +220,51 @@ func extractTarGzip(archivePath, destination, root string) error {
 			return err
 		}
 	}
+}
+
+// validateTarLink checks that a relative link target stays below the expected archive root.
+// validateTarLink 检查相对链接目标仍位于预期归档根目录内。
+func validateTarLink(name, linkTarget, root string) error {
+	if linkTarget == "" || strings.HasPrefix(linkTarget, "/") || strings.Contains(linkTarget, "\\") || strings.ContainsRune(linkTarget, 0) {
+		return fmt.Errorf("unsafe TAR symbolic link %q -> %q", name, linkTarget)
+	}
+	resolved := path.Clean(path.Join(path.Dir(name), linkTarget))
+	if resolved == root || !strings.HasPrefix(resolved, root+"/") {
+		return fmt.Errorf("TAR symbolic link leaves expected root: %q -> %q", name, linkTarget)
+	}
+	return nil
+}
+
+// createTarLinks materializes validated links and confirms their final targets remain in the extracted tree.
+// createTarLinks 创建经校验的链接，并确认最终目标仍在解压目录内。
+func createTarLinks(destination string, links []tarLink) error {
+	resolvedRoot, err := filepath.EvalSymlinks(destination)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		parent := filepath.Dir(link.name)
+		relativeParent, err := filepath.Rel(destination, parent)
+		if err != nil {
+			return err
+		}
+		resolvedParent, err := filepath.EvalSymlinks(parent)
+		if err != nil || resolvedParent != filepath.Join(resolvedRoot, relativeParent) {
+			return fmt.Errorf("TAR symbolic link parent is not a real directory: %q", link.name)
+		}
+		if err := os.Symlink(link.target, link.name); err != nil {
+			return err
+		}
+	}
+	for _, link := range links {
+		resolved, err := filepath.EvalSymlinks(link.name)
+		if err != nil {
+			return fmt.Errorf("TAR symbolic link has no target: %q: %w", link.name, err)
+		}
+		relative, err := filepath.Rel(resolvedRoot, resolved)
+		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("TAR symbolic link escapes extraction: %q", link.name)
+		}
+	}
+	return nil
 }
