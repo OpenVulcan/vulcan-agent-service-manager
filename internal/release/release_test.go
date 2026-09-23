@@ -20,6 +20,9 @@ func TestCanonicalMetadataAndMirrorBytes(t *testing.T) {
 	hash := sha256.Sum256(contents)
 	corrupt := false
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "" {
+			t.Error("GitHub token was forwarded to a non-official endpoint")
+		}
 		if strings.HasPrefix(request.URL.Path, "/repos/") {
 			_ = json.NewEncoder(writer).Encode(map[string]any{
 				"tag_name": "v0.1.0",
@@ -42,6 +45,7 @@ func TestCanonicalMetadataAndMirrorBytes(t *testing.T) {
 	client := NewClient()
 	client.HTTP = server.Client()
 	client.APIBase = server.URL
+	client.Token = "private-test-token"
 	info, err := client.Fetch(context.Background(), ManagerRepository, "")
 	if err != nil {
 		t.Fatal(err)

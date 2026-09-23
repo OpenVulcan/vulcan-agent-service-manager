@@ -18,12 +18,12 @@ func TestWizardRoutesChoicesToInstall(t *testing.T) {
 		commands <- command
 		return nil
 	}
-	initial := model{ctx: context.Background(), runner: runner, page: "wizard", cursor: 10, source: 2, mirror: "https://gh-proxy.com", version: 1, tag: "v0.1.0", root: "/tmp/vasm-test", mode: 2, autostart: true, initSkills: true, skillNames: "vulcan-file", addPath: true}
-	if len(initial.wizardRows()) != 11 {
+	initial := model{ctx: context.Background(), runner: runner, page: "wizard", cursor: 11, source: 2, mirror: "https://gh-proxy.com", version: 1, tag: "v0.1.0", root: "/tmp/vasm-test", vmm: true, vmmURL: "http://127.0.0.1:17625", mode: 2, autostart: true, initSkills: true, skillNames: "vulcan-file", addPath: true}
+	if len(initial.wizardRows()) != 12 {
 		t.Fatal("wizard row count changed without routing update")
 	}
 	_, _ = initial.updateWizard("enter")
-	want := []string{"install", "--yes", "--source", "mirror", "--mirror-base", "https://gh-proxy.com", "--app-version", "v0.1.0", "--runtime-root", "/tmp/vasm-test", "--vmm", "false", "--init-skills", "--skills", "vulcan-file", "--add-path", "--service", "--scope", "system", "--startup", "auto"}
+	want := []string{"install", "--yes", "--source", "mirror", "--mirror-base", "https://gh-proxy.com", "--app-version", "v0.1.0", "--runtime-root", "/tmp/vasm-test", "--vmm", "true", "--vmm-url", "http://127.0.0.1:17625", "--init-skills", "--skills", "vulcan-file", "--add-path", "--service", "--scope", "system", "--startup", "auto"}
 	select {
 	case actual := <-commands:
 		if !reflect.DeepEqual(actual, want) {

@@ -82,6 +82,9 @@ type Client struct {
 	// APIBase allows a local test server to replace the GitHub API.
 	// APIBase 允许本地测试服务器替换 GitHub API。
 	APIBase string
+	// Token optionally authenticates official GitHub API metadata requests.
+	// Token 可选地为 GitHub 官方 API 元数据请求提供认证。
+	Token string
 }
 
 // NewClient returns a GitHub Release client with a request deadline and HTTPS-only redirects.
@@ -95,7 +98,7 @@ func NewClient() *Client {
 			}
 			return nil
 		},
-	}, APIBase: "https://api.github.com"}
+	}, APIBase: "https://api.github.com", Token: os.Getenv("GITHUB_TOKEN")}
 }
 
 // ValidateTag checks a version tag before it enters a URL or asset name.
@@ -171,6 +174,11 @@ func (c *Client) Fetch(ctx context.Context, repository, tag string) (Release, er
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "vasm-release-client")
+	if c.Token != "" && c.APIBase == "https://api.github.com" {
+		// Never forward a caller token to a mirror or a local test endpoint.
+		// 不向镜像或本地测试端点转发调用方令牌。
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return Release{}, err

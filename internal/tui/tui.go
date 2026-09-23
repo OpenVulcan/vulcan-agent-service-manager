@@ -43,6 +43,9 @@ type model struct {
 	// vmm selects whether to enable VMM integration.
 	// vmm 选择是否启用 VMM 集成。
 	vmm bool
+	// vmmURL optionally overrides the published VMM endpoint during installation.
+	// vmmURL 可选地在安装时覆盖发布包中的 VMM 地址。
+	vmmURL string
 	// mode selects foreground, user service, or system service.
 	// mode 选择前台、用户服务或系统服务。
 	mode int
@@ -444,11 +447,16 @@ func (m model) wizardRows() []string {
 	if m.root != "" {
 		root = m.root
 	}
+	vmmURL := "使用主程序默认地址"
+	if m.vmmURL != "" {
+		vmmURL = m.vmmURL
+	}
 	return []string{
 		"下载源: " + sources[m.source],
 		"自定义镜像: " + m.mirror,
 		"主程序版本: " + versions[m.version],
 		fmt.Sprintf("对接 VMM: %t", m.vmm),
+		"VMM 地址: " + vmmURL,
 		"运行方式: " + modes[m.mode],
 		fmt.Sprintf("服务开机自启: %t", m.autostart),
 		fmt.Sprintf("立即安装已启用系统技能: %t", m.initSkills),
@@ -487,22 +495,24 @@ func (m model) updateWizard(key string) (tea.Model, tea.Cmd) {
 	case 3:
 		m.vmm = !m.vmm
 	case 4:
+		m.beginInput("VMM HTTP/HTTPS 地址；留空使用主程序默认地址", nil, m.vmmURL)
+	case 5:
 		if runtime.GOOS == "windows" {
 			m.mode = 2 - m.mode
 		} else {
 			m.mode = (m.mode + 1) % 3
 		}
-	case 5:
-		m.autostart = !m.autostart
 	case 6:
-		m.initSkills = !m.initSkills
+		m.autostart = !m.autostart
 	case 7:
-		m.beginInput("系统技能名称：default、none 或逗号分隔名称；安装时按发布包核对", nil, m.skillNames)
+		m.initSkills = !m.initSkills
 	case 8:
-		m.addPath = !m.addPath
+		m.beginInput("系统技能名称：default、none 或逗号分隔名称；安装时按发布包核对", nil, m.skillNames)
 	case 9:
-		m.beginInput("安装目录绝对路径；留空使用默认目录", nil, m.root)
+		m.addPath = !m.addPath
 	case 10:
+		m.beginInput("安装目录绝对路径；留空使用默认目录", nil, m.root)
+	case 11:
 		if m.source == 2 && m.mirror == "" {
 			m.beginInput("自定义 HTTPS 代理基址", nil, "https://")
 			return m, nil
@@ -525,6 +535,9 @@ func (m model) updateWizard(key string) (tea.Model, tea.Cmd) {
 			command = append(command, "--runtime-root", m.root)
 		}
 		command = append(command, "--vmm", fmt.Sprintf("%t", m.vmm))
+		if m.vmmURL != "" {
+			command = append(command, "--vmm-url", m.vmmURL)
+		}
 		if m.initSkills {
 			command = append(command, "--init-skills")
 		}
@@ -597,9 +610,11 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.mirror = m.inputText
 		case 2:
 			m.tag = m.inputText
-		case 7:
+		case 4:
+			m.vmmURL = m.inputText
+		case 8:
 			m.skillNames = m.inputText
-		case 9:
+		case 10:
 			m.root = m.inputText
 		}
 		m.page = "wizard"

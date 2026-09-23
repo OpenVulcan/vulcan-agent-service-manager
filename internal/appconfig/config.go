@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -82,8 +83,11 @@ func SetScalar(root string, setting Scalar) error {
 	if kind == "string" && strings.TrimSpace(setting.Value) == "" {
 		return errors.New("config value cannot be empty")
 	}
-	if setting.Key == "vmm" && !strings.HasPrefix(setting.Value, "http://") && !strings.HasPrefix(setting.Value, "https://") {
-		return errors.New("VMM endpoint must be an HTTP or HTTPS URL")
+	if setting.Key == "vmm" {
+		endpoint, err := url.Parse(setting.Value)
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
+			return errors.New("VMM endpoint must be an HTTP or HTTPS URL with a host")
+		}
 	}
 	file := filepath.Join(root, "configs", "config.yaml")
 	doc, err := loadYAML(file)
@@ -119,6 +123,7 @@ func SetToolResultBytes(root, pattern string, limit int) error {
 	}
 	var budget *yaml.Node
 	var clients *yaml.Node
+	selectedClientIndex := -1
 	if pattern == "" {
 		budget = mappingValue(doc, "defaults")
 	} else {
@@ -126,13 +131,14 @@ func SetToolResultBytes(root, pattern string, limit int) error {
 		if clients == nil || clients.Kind != yaml.SequenceNode {
 			return errors.New("clients budget sequence is missing")
 		}
-		for _, client := range clients.Content {
+		for index, client := range clients.Content {
 			name := mappingValue(client, "pattern")
-			if name != nil && name.Value == pattern {
+			if name != nil && strings.EqualFold(name.Value, pattern) {
 				if budget != nil {
 					return fmt.Errorf("duplicate client pattern %q", pattern)
 				}
 				budget = client
+				selectedClientIndex = index
 			}
 		}
 	}
@@ -150,17 +156,48 @@ func SetToolResultBytes(root, pattern string, limit int) error {
 		clients.Content = append([]*yaml.Node{added.Content[0].Content[0]}, clients.Content...)
 		return saveYAML(file, doc)
 	}
-	for _, key := range []string{"budgets", "tool_result", "bytes", "default"} {
-		budget = mappingValue(budget, key)
-		if budget == nil {
-			return fmt.Errorf("tool result byte budget path is missing at %q", key)
+	if selectedClientIndex > 0 {
+		// The service uses first-match rules, so an existing exact rule must precede wildcards.
+		// 服务采用首个匹配规则，因此已有精确规则必须移到通配规则之前。
+		selected := clients.Content[selectedClientIndex]
+		clients.Content = append([]*yaml.Node{selected}, append(clients.Content[:selectedClientIndex], clients.Content[selectedClientIndex+1:]...)...)
+	}
+	budgets := mappingValue(budget, "budgets")
+	toolResult := mappingValue(budgets, "tool_result")
+	if toolResult == nil || toolResult.Kind != yaml.MappingNode {
+		return errors.New("tool result budget mapping is missing")
+	}
+	bytesNode := mappingValue(toolResult, "bytes")
+	if bytesNode == nil {
+		bytesNode = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		toolResult.Content = append(toolResult.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "bytes"}, bytesNode)
+	}
+	if bytesNode.Kind != yaml.MappingNode {
+		return errors.New("tool result byte budget must be a mapping")
+	}
+	defaultKey := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "default"}
+	defaultValue := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(limit)}
+	for index := 0; index+1 < len(bytesNode.Content); index += 2 {
+		if bytesNode.Content[index].Value == "default" {
+			defaultKey = bytesNode.Content[index]
+			defaultValue = bytesNode.Content[index+1]
+			if defaultValue.Kind != yaml.ScalarNode {
+				return errors.New("tool result byte default is not a scalar")
+			}
+			defaultValue.Tag = "!!int"
+			defaultValue.Value = strconv.Itoa(limit)
+			break
 		}
 	}
-	if budget.Kind != yaml.ScalarNode {
-		return errors.New("tool result byte budget is not a scalar")
+	// A fixed byte limit must not be overridden by dynamic sources or a smaller token metric.
+	// 固定字节上限不能继续被动态来源或更小的 token 指标覆盖。
+	bytesNode.Content = []*yaml.Node{defaultKey, defaultValue}
+	for index := 0; index+1 < len(toolResult.Content); index += 2 {
+		if toolResult.Content[index].Value == "tokens" {
+			toolResult.Content = append(toolResult.Content[:index], toolResult.Content[index+2:]...)
+			break
+		}
 	}
-	budget.Tag = "!!int"
-	budget.Value = fmt.Sprintf("%d", limit)
 	return saveYAML(file, doc)
 }
 

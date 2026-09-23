@@ -139,6 +139,7 @@ jobs:
         env:
           BINARY: ${{ matrix.binary }}
           VASM_APP_ROOT: ${{ runner.temp }}/vasm-app
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           "dist-bin/$BINARY" install --yes --app-version v0.1.0 --runtime-root "$VASM_APP_ROOT" --vmm false

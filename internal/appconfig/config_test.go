@@ -39,6 +39,31 @@ func TestBudgetRulePreservesCommentsAndPrecedence(t *testing.T) {
 	}
 }
 
+// TestBudgetUpdateOverridesExistingDynamicRule verifies first-match precedence and a truly fixed byte cap.
+// TestBudgetUpdateOverridesExistingDynamicRule 验证首个匹配优先级与真正固定的字节上限。
+func TestBudgetUpdateOverridesExistingDynamicRule(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "configs")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(directory, "client_budgets.yaml")
+	original := []byte("defaults:\n  budgets:\n    tool_result:\n      bytes:\n        default: 20000\nclients:\n  - pattern: \"*\"\n    budgets:\n      tool_result:\n        bytes:\n          default: 1000\n  - pattern: agentclient\n    budgets:\n      tool_result:\n        bytes:\n          default: 5000\n          config_sources:\n            - type: env\n              key: OLD_DYNAMIC_LIMIT\n        tokens:\n          default: 100\n")
+	if err := os.WriteFile(file, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetToolResultBytes(root, "AgentClient", 8192); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Index(updated, []byte("agentclient")) > bytes.Index(updated, []byte("pattern: \"*\"")) || bytes.Contains(updated, []byte("OLD_DYNAMIC_LIMIT")) || bytes.Contains(updated, []byte("tokens:")) || bytes.Count(updated, []byte("agentclient")) != 1 || !bytes.Contains(updated, []byte("default: 8192")) {
+		t.Fatalf("existing rule was not made fixed and first-match:\n%s", updated)
+	}
+}
+
 // TestSkillConfigPreservesUnknownFields checks edits do not discard forward-compatible JSON keys.
 // TestSkillConfigPreservesUnknownFields 检查编辑不会丢弃供后续版本使用的 JSON 键。
 func TestSkillConfigPreservesUnknownFields(t *testing.T) {
